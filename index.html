@@ -179,6 +179,11 @@
     .diff-btn small { display: block; font-weight: 400; font-size: 10px; color: #888; margin-top: 3px; }
     .diff-btn.active { border-color: #ffd700; color: #ffd700; background: #3a3420; }
 
+    @keyframes kingpulse {
+      0% { fill: #f44336 !important; } 100% {}
+    }
+    #board .square.king-pulse { animation: kingpulse 1.3s ease-out; }
+    #flare-btn.arming { background: #b28418; box-shadow: 0 0 0 2px #ffd700 inset; }
     @keyframes boardshake {
       0%,100% { transform: translate(0,0); } 25% { transform: translate(-5px,2px); }
       50% { transform: translate(4px,-3px); } 75% { transform: translate(-2px,-2px); }
@@ -389,6 +394,7 @@
       <div class="section">
         <div id="status">Ready</div>
         <div id="llm-thinking">적이 수를 읽는 중…</div>
+        <button id="flare-btn" style="background:#7a5c1e">🔦 조명탄 ×0 — 원하는 칸 5×5를 한 턴 밝힌다</button>
         <button id="new-game">새 게임</button>
       </div>
 
@@ -791,6 +797,7 @@
         this.playerColor = 'white';
         this.isEnabled = false;
         this.visibleSet = new Set();
+        this.flareSet = new Set();   // 조명탄으로 임시 공개된 칸
         this.showVisOnlyOnTurn = false;
         this.setupBoard();
       }
@@ -821,6 +828,7 @@
         // If configured, only update visibility when it's the player's turn
         if (this.showVisOnlyOnTurn && this.engine.turn !== this.playerColor) return;
         const vis = this.engine.getVisibleSet(this.playerColor);
+        this.flareSet.forEach(k => vis.add(k));
         this.visibleSet = vis;
         for (let row = 0; row < 8; row++) {
           for (let col = 0; col < 8; col++) {
@@ -1180,9 +1188,9 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
 
     // ==================== GAME CONTROLLER ====================
     const DIFFS = {
-      '신병':   { depth: 1, noise: 90, delay: 500, clock: 25 },
-      '고참':   { depth: 2, noise: 25, delay: 650, clock: 15 },
-      '사령관': { depth: 3, noise: 6,  delay: 750, clock: 10 },
+      '신병':   { depth: 1, noise: 90, delay: 500, clock: 25, flares: 3 },
+      '고참':   { depth: 2, noise: 25, delay: 650, clock: 15, flares: 2 },
+      '사령관': { depth: 3, noise: 6,  delay: 750, clock: 10, flares: 1 },
     };
     class GameController {
       constructor() {
@@ -1201,6 +1209,9 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
         this.timerId = null;
         this.timeLeft = 0;
         this.lastTickSec = -1;
+        this.flares = 0;
+        this.flareMode = false;
+        this.flareFresh = false;
 
         this.ui.onMove = (move) => this.onPlayerMove(move);
         this.setupEventListeners();
@@ -1224,6 +1235,21 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
             this.diff = btn.dataset.diff;
           });
         });
+        document.getElementById('flare-btn').addEventListener('click', () => {
+          if (!this.isPlaying || this.flares <= 0 || this.engine.turn !== this.playerColor) return;
+          this.flareMode = !this.flareMode;
+          document.getElementById('flare-btn').classList.toggle('arming', this.flareMode);
+          this.updateStatus(this.flareMode ? '🔦 조명탄 낙하 지점을 클릭하라' : undefined);
+        });
+        // 조명탄 조준 모드: 보드 클릭을 가로채 낙하 지점으로 사용
+        document.getElementById('chess-svg').addEventListener('click', (e) => {
+          if (!this.flareMode) return;
+          const t = e.target;
+          if (t && t.dataset && t.dataset.row !== undefined) {
+            e.stopPropagation();
+            this.dropFlare(parseInt(t.dataset.row), parseInt(t.dataset.col));
+          }
+        }, true);
         ['api-base', 'api-key', 'api-model'].forEach(id => { document.getElementById(id).addEventListener('change', () => this.saveSettings()); });
         document.getElementById('vis-only-turn').addEventListener('change', (e) => {
           const val = !!e.target.checked; localStorage.setItem('fog-vis-only-turn', val ? '1' : '0');
@@ -1283,6 +1309,57 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
         }, 100);
       }
       stopClock() { if (this.timerId) { clearInterval(this.timerId); this.timerId = null; } }
+      /* ===== 조명탄 & 킹의 직감 ===== */
+      updateFlareBtn() {
+        const btn = document.getElementById('flare-btn');
+        btn.textContent = `🔦 조명탄 ×${this.flares} — 원하는 칸 5×5를 한 턴 밝힌다`;
+        btn.disabled = this.flares <= 0;
+        btn.style.display = this.opponent === 'bot' ? 'block' : 'none';
+      }
+      dropFlare(row, col) {
+        if (this.flares <= 0) return;
+        this.flares -= 1;
+        this.flareMode = false;
+        this.flareFresh = true;
+        document.getElementById('flare-btn').classList.remove('arming');
+        for (let dr = -2; dr <= 2; dr++) for (let dc = -2; dc <= 2; dc++) {
+          const r = row + dr, c = col + dc;
+          if (r >= 0 && r < 8 && c >= 0 && c < 8) this.ui.flareSet.add(`${r},${c}`);
+        }
+        this.ui.refreshFog();
+        this.ui.renderPieces();
+        this.updateFlareBtn();
+        this.updateStatus();
+        this.popupAt(row, col, '🔦 조명탄!', '#ffd700');
+        this.fx('reveal');
+        logger.info(`Flare dropped at ${this.engine.coordsToAlgebraic(row, col)}`);
+      }
+      kingIntuition() {
+        // 보이지 않는 적 기물이 내 킹 반경 2칸 안에 있으면 — 위치는 모른 채 심장만 뛴다
+        try {
+          if (!this.isPlaying) return;
+          let kr = -1, kc = -1;
+          const kCh = this.playerColor === 'white' ? 'K' : 'k';
+          for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) if (this.engine.board[r][c] === kCh) { kr = r; kc = c; }
+          if (kr < 0) return;
+          const vis = this.ui.visibleSet;
+          let danger = false;
+          for (let r = Math.max(0, kr - 2); r <= Math.min(7, kr + 2); r++) {
+            for (let c = Math.max(0, kc - 2); c <= Math.min(7, kc + 2); c++) {
+              const ch = this.engine.board[r][c];
+              if (ch === '.' || vis.has(`${r},${c}`)) continue;
+              const pc = (ch === ch.toUpperCase()) ? 'white' : 'black';
+              if (pc !== this.playerColor) { danger = true; break; }
+            }
+          }
+          if (danger) {
+            const sq = this.ui.getSquareElement(kr, kc);
+            if (sq) { sq.classList.remove('king-pulse'); void sq.getBBox; sq.classList.add('king-pulse'); setTimeout(() => sq.classList.remove('king-pulse'), 1400); }
+            this.fx('tick'); setTimeout(() => this.fx('tick'), 220);
+            this.updateStatus('…가까이에서 무언가 움직인다');
+          }
+        } catch (e) {}
+      }
       onClockExpired() {
         this.stopClock();
         if (!this.isPlaying || this.engine.turn !== this.playerColor) return;
@@ -1347,6 +1424,10 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
         this.pendingIllegalForLLM = null;
         this.gameEnded = false;
         this.score = 0; this.combo = 0;
+        this.flares = this.opponent === 'bot' ? DIFFS[this.diff].flares : 0;
+        this.flareMode = false; this.flareFresh = false;
+        this.ui.flareSet.clear();
+        this.updateFlareBtn();
         this.updateHUD();
         document.getElementById('game-setup').style.display = 'none';
         document.getElementById('game-controls').style.display = 'block';
@@ -1381,6 +1462,10 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
         try {
           if (!this.isPlaying || this.engine.turn !== this.playerColor) { logger.warning('Player move rejected - not player turn or game not active'); return; }
           this.stopClock();
+          this.flareMode = false;
+          document.getElementById('flare-btn').classList.remove('arming');
+          if (this.flareFresh) this.flareFresh = false;   // 이번 수까지는 조명탄 유지
+          else if (this.ui.flareSet.size) { this.ui.flareSet.clear(); }
           logger.info('Player move received', move);
           this.ui.disable();
           const oppColor = (this.playerColor === 'white') ? 'black' : 'white';
@@ -1438,7 +1523,8 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
         document.getElementById('llm-thinking').style.display = 'none';
         this.updateStatus();
         const gameOver = this.engine.isGameOver();
-        if (gameOver.over) { this.endGame(gameOver); }
+        if (gameOver.over) { this.endGame(gameOver); return; }
+        this.kingIntuition();
       }
 
       async makeAIMove() {
