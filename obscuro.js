@@ -42,8 +42,10 @@
       });
       return this.readyP;
     }
-    // fen 하나를 MultiPV로 평가해 {move: cp} 맵 반환
-    evalFen(fen, { movetimeMs = 120, multipv = 8, depthCap = 12 } = {}) {
+    // fen 하나를 MultiPV로 평가해 {move: cp} 맵 반환.
+    // searchmoves를 주면 그 수들만 평가한다 — 모든 샘플에서 같은 후보를 채점해야
+    // 세계 간 점수를 비교할 수 있다.
+    evalFen(fen, { movetimeMs = 120, multipv = 8, depthCap = 12, searchmoves = null } = {}) {
       this.queue = this.queue.then(() => new Promise((resolve) => {
         const scores = {};
         let done = false;
@@ -60,7 +62,8 @@
         };
         this.w.postMessage('setoption name MultiPV value ' + multipv);
         this.w.postMessage('position fen ' + fen);
-        this.w.postMessage(`go movetime ${movetimeMs} depth ${depthCap}`);
+        const sm = (searchmoves && searchmoves.length) ? ' searchmoves ' + searchmoves.join(' ') : '';
+        this.w.postMessage(`go movetime ${movetimeMs} depth ${depthCap}${sm}`);
         setTimeout(finish, movetimeMs + 1500); // 안전망
       }));
       return this.queue;
@@ -284,6 +287,10 @@
           if (engine.board[m.row][m.col] === kCh) return { from: { row: r, col: c }, to: { row: m.row, col: m.col }, promotion: 'queen' };
         }
       }
+      // 믿는 적 킹 위치 (후보 선정과 접근 가산에 쓴다)
+      let kr0 = -1, kc0 = -1;
+      const kBelief = (this.color === 'white') ? 'k' : 'K';
+      for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) if (this.belief[r][c] === kBelief) { kr0 = r; kc0 = c; }
       // 실보드 기준 내 합법수 (착수 후보 전체)
       const legal = new Set();
       for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
@@ -308,6 +315,8 @@
           used++;
           continue;
         }
+        // searchmoves로 후보를 고정해 보니 짧은 탐색시간을 후보 수만큼 쪼개 쓰느라
+        // 평가가 얕아져 실측에서 오히려 약해졌다(1승 3패). 자연 탐색을 그대로 쓴다.
         const fen = this.boardToFen(b, this.color);
         const scores = await this.sf.evalFen(fen, { movetimeMs: this.cfg.movetimeMs, multipv: this.cfg.multipv });
         const opp = (this.color === 'white') ? 'black' : 'white';
@@ -330,10 +339,7 @@
       }
       // 2) 집계: 평균 − λ·표준편차 − 결측 페널티 + 정찰 가치
       //    안개 체스에서 시야는 자원이다. 같은 값이면 더 많이 보는 수를 둔다.
-      // 믿는 적 킹 위치 — 접근하는 수에 가산 (안개 체스는 킹을 잡아야 끝난다)
-      let kr = -1, kc = -1;
-      const kCh2 = (this.color === 'white') ? 'k' : 'K';
-      for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) if (this.belief[r][c] === kCh2) { kr = r; kc = c; }
+      const kr = kr0, kc = kc0;
       let bestU = null, bestScore = -Infinity;
       for (const [u, arr] of Object.entries(agg)) {
         const mean = arr.reduce((a, x) => a + x, 0) / arr.length;
