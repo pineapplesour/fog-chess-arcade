@@ -11,11 +11,29 @@ const browser = await chromium.launch({
   headless: true,
   args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--hide-scrollbars'],
 });
+const videoT0 = Date.now();      // 영상 타임라인 0초 기준
 const ctx = await browser.newContext({
   viewport: { width: 1280, height: 720 },
   recordVideo: { dir: outDir, size: { width: 1280, height: 720 } },
 });
 const page = await ctx.newPage();
+// 사운드 이벤트를 시각과 함께 기록한다 (나중에 같은 소리를 합성해 영상에 붙이기 위해)
+await page.addInitScript(() => {
+  window.__sfx = [];
+  const hook = () => {
+    if (!window.ArcadeFX || window.ArcadeFX.__hooked) return;
+    for (const k of Object.keys(window.ArcadeFX)) {
+      const f = window.ArcadeFX[k];
+      if (typeof f !== 'function') continue;
+      window.ArcadeFX[k] = function (...a) {
+        try { window.__sfx.push({ n: k, t: Date.now(), a: a[0] }); } catch (e) {}
+        return f.apply(this, a);
+      };
+    }
+    window.ArcadeFX.__hooked = true;
+  };
+  const iv = setInterval(() => { hook(); if (window.ArcadeFX && window.ArcadeFX.__hooked) clearInterval(iv); }, 60);
+});
 page.on('pageerror', e => console.error('[err]', e.message.slice(0, 140)));
 await page.goto(url, { waitUntil: 'load' });
 await page.waitForFunction('window.__ready3d === true', null, { timeout: 40000 });
@@ -88,6 +106,12 @@ for (let i = 0; i < 34; i++) {
 }
 await page.waitForTimeout(3400);            // 종료 카드 또는 마지막 상황
 console.log('final score', await page.evaluate('window.__game.score'));
+const sfx = JSON.parse(await page.evaluate('JSON.stringify(window.__sfx || [])'));
+const events = sfx.map(e => ({ n: e.n, t: (e.t - videoT0) / 1000, a: e.a })).filter(e => e.t >= 0);
+// wallEnd = 실제 경과시간. 영상이 이보다 짧으면 그 비율로 소리를 당겨야 화면과 맞는다.
+const wallEnd = (Date.now() - videoT0) / 1000;
+require('fs').writeFileSync(outDir + '/sfx.json', JSON.stringify({ events, wallEnd }));
+console.log('sfx events', events.length, 'wallEnd', wallEnd.toFixed(1));
 
 await ctx.close();                          // 영상 flush
 await browser.close();
