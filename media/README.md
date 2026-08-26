@@ -1,2 +1,2 @@
-데모 영상을 이 폴더에 `demo.mp4` 로 넣고 push 하면
-https://pineapplesour.github.io/fog-chess-arcade/media/demo.mp4 로 바로 재생된다.
+`demo.mp4` — 실제 플레이 녹화 (1280x720, 약 58초).
+재생: https://pineapplesour.github.io/fog-chess-arcade/media/demo.mp4
