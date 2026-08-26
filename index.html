@@ -354,6 +354,7 @@
           <div class="diff-btn" data-diff="신병">신병<small>느긋한 시계 · 얕은 수읽기</small></div>
           <div class="diff-btn active" data-diff="고참">고참<small>15초 시계 · 2수 수읽기</small></div>
           <div class="diff-btn" data-diff="사령관">사령관<small>10초 시계 · 3수 수읽기</small></div>
+          <div class="diff-btn" data-diff="OBSCURO" style="border-color:#7a3030">OBSCURO<small>논문급 — 신념 샘플링 ×Stockfish</small></div>
         </div>
 
         <label>진영</label>
@@ -422,6 +423,7 @@
   </div>
 
   <script src="./arcade-fx.js"></script>
+  <script src="./obscuro.js"></script>
   <script>
     // ==================== LOGGER ====================
     class Logger {
@@ -1191,6 +1193,7 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
       '신병':   { depth: 1, noise: 90, delay: 500, clock: 25, flares: 3 },
       '고참':   { depth: 2, noise: 25, delay: 650, clock: 15, flares: 2 },
       '사령관': { depth: 3, noise: 6,  delay: 750, clock: 10, flares: 1 },
+      'OBSCURO': { obscuro: true, samples: 8, movetimeMs: 90, multipv: 8, lambda: 0.5, delay: 0, clock: 20, flares: 3 },
     };
     class GameController {
       constructor() {
@@ -1198,6 +1201,7 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
         this.ui = new ChessUI(this.engine);
         this.llm = new LLMPlayer();
         this.bot = new BotPlayer();
+        this.obscuro = (window.ObscuroBot) ? new window.ObscuroBot('./engine/stockfish-nnue-16-single.js') : null;
         this.opponent = 'bot';
         this.isPlaying = false;
         this.playerColor = 'white';
@@ -1233,6 +1237,7 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
             document.querySelectorAll('.diff-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             this.diff = btn.dataset.diff;
+            if (DIFFS[this.diff].obscuro && this.obscuro) this.obscuro.boot();   // 엔진 프리로드
           });
         });
         document.getElementById('flare-btn').addEventListener('click', () => {
@@ -1314,7 +1319,7 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
         const btn = document.getElementById('flare-btn');
         btn.textContent = `🔦 조명탄 ×${this.flares} — 원하는 칸 5×5를 한 턴 밝힌다`;
         btn.disabled = this.flares <= 0;
-        btn.style.display = this.opponent === 'bot' ? 'block' : 'none';
+        btn.style.display = (this.opponent === 'bot' || this.opponent === 'obscuro') ? 'block' : 'none';
       }
       dropFlare(row, col) {
         if (this.flares <= 0) return;
@@ -1410,6 +1415,10 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
           const mode = document.querySelector('input[name="mode"]:checked').value;
           this.llm.configure(baseUrl, apiKey, model, mode);
           this.opponent = 'llm';
+        } else if (DIFFS[this.diff].obscuro && this.obscuro) {
+          this.opponent = 'obscuro';
+          this.obscuro.newGame(botColor, DIFFS[this.diff]);
+          this.obscuro.boot();
         } else {
           this.opponent = 'bot';
           this.bot.newGame(botColor, DIFFS[this.diff]);
@@ -1424,7 +1433,7 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
         this.pendingIllegalForLLM = null;
         this.gameEnded = false;
         this.score = 0; this.combo = 0;
-        this.flares = this.opponent === 'bot' ? DIFFS[this.diff].flares : 0;
+        this.flares = (this.opponent === 'bot' || this.opponent === 'obscuro') ? DIFFS[this.diff].flares : 0;
         this.flareMode = false; this.flareFresh = false;
         this.ui.flareSet.clear();
         this.updateFlareBtn();
@@ -1432,7 +1441,7 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
         document.getElementById('game-setup').style.display = 'none';
         document.getElementById('game-controls').style.display = 'block';
         document.getElementById('hud').style.display = 'flex';
-        document.getElementById('timer-wrap').style.display = this.opponent === 'bot' ? 'block' : 'none';
+        document.getElementById('timer-wrap').style.display = this.opponent !== 'llm' ? 'block' : 'none';
         document.getElementById('move-history').textContent = '';
         this.updateStatus();
         if (this.playerColor === 'black') { await this.makeAIMove(); }
@@ -1484,6 +1493,7 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
             if (this.combo >= 2) this.fx('combo', this.combo);
             this.shakeBoard();
             if (this.opponent === 'bot') this.bot.noteSquare(this.engine, move.to.row, move.to.col) /* 봇도 자기 기물이 잡힌 자리는 안다 */;
+            if (this.opponent === 'obscuro') this.obscuro.noteSquare(this.engine, move.to.row, move.to.col);
           } else {
             this.combo = 0;
             this.fx('move');
@@ -1532,12 +1542,25 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
         try {
           const botColor = this.playerColor === 'white' ? 'black' : 'white';
           document.getElementById('llm-thinking').style.display = 'block';
-          this.updateStatus('적이 수를 읽는 중…');
-          await new Promise(r => setTimeout(r, DIFFS[this.diff].delay * (0.6 + Math.random() * 0.8)));
-          const move = this.bot.chooseMove(this.engine);
+          let move;
+          if (this.opponent === 'obscuro') {
+            this.updateStatus('OBSCURO — 안개 너머의 보드를 샘플링 중…');
+            document.getElementById('llm-thinking').textContent = '신념 보드 × Stockfish 평가 중…';
+            move = await this.obscuro.chooseMove(this.engine, (i, k) => {
+              document.getElementById('llm-thinking').textContent = `신념 보드 ${i}/${k} × Stockfish 평가 중…`;
+            });
+          } else {
+            this.updateStatus('적이 수를 읽는 중…');
+            await new Promise(r => setTimeout(r, DIFFS[this.diff].delay * (0.6 + Math.random() * 0.8)));
+            move = this.bot.chooseMove(this.engine);
+          }
           if (!move) { this.endGame({ over: true, result: 'king capture', winner: this.playerColor }); return; }
           logger.info('Bot move', move);
           await this.applyAIMove(move, botColor);
+          if (this.opponent === 'obscuro' && this.engine.lastMove && this.engine.lastMove.captured) {
+            this.obscuro.noteCaptureOfEnemy(this.engine.lastMove.captured);   // 잡은 기물로 적 재고 갱신
+          }
+          document.getElementById('llm-thinking').textContent = '적이 수를 읽는 중…';
         } catch (error) {
           logger.error('Critical error in makeAIMove', { error: error.message, stack: error.stack });
           document.getElementById('llm-thinking').style.display = 'none';
