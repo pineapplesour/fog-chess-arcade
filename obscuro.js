@@ -87,6 +87,7 @@
     ensureBelief() {
       if (this.belief) return;
       this.belief = Array.from({ length: 8 }, () => Array(8).fill(null));
+      this.age = Array.from({ length: 8 }, () => Array(8).fill(0));
       const back = ['r', 'n', 'b', 'q', 'k', 'b', 'n', 'r'];
       if (this.color === 'black') { for (let c = 0; c < 8; c++) { this.belief[7][c] = back[c].toUpperCase(); this.belief[6][c] = 'P'; } }
       else { for (let c = 0; c < 8; c++) { this.belief[0][c] = back[c]; this.belief[1][c] = 'p'; } }
@@ -94,11 +95,28 @@
     observe(engine) {
       this.ensureBelief();
       const vis = engine.getVisibleSet(this.color);
+      // 못 본 기물은 그 사이에 움직였을 것이다. 나이를 먹인다.
+      for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+        if (this.belief[r][c]) this.age[r][c] += 1;
+      }
       vis.forEach(k => {
         const [r, c] = k.split(',').map(Number);
         const ch = engine.board[r][c];
         this.belief[r][c] = this.enemyIs(ch) ? ch : null;
+        this.age[r][c] = 0;
       });
+    }
+    // 오래 못 본 기물은 제자리에 있을 리 없다. 안 보이는 칸을 따라 흘려보낸다.
+    // (이걸 안 하면 상대 군대가 초기 배치에 얼어붙은 유령이 되어 평가가 통째로 어긋난다)
+    drift(r, c, ch, vis, occupied) {
+      const scratch = Array.from({ length: 8 }, () => Array(8).fill('.'));
+      scratch[r][c] = ch;
+      // 한 수 분량만. 슬라이딩 기물이 빈 판을 가로질러 순간이동하지 않도록 거리도 제한한다.
+      const cand = pseudoOn(scratch, r, c).filter(m =>
+        !vis.has(`${m.row},${m.col}`) && !occupied.has(`${m.row},${m.col}`) &&
+        Math.max(Math.abs(m.row - r), Math.abs(m.col - c)) <= 3);
+      if (!cand.length) return null;
+      return cand[(Math.random() * cand.length) | 0];
     }
     noteCaptureOfEnemy(pieceChar) { // 내가 잡은 적 기물 → 재고 차감
       const t = (pieceChar || '').toLowerCase();
@@ -123,14 +141,39 @@
         if (mine) b[r][c] = ch;
         else if (vis.has(`${r},${c}`)) { b[r][c] = ch; const t = ch.toLowerCase(); if (need[t] > 0) need[t] -= 1; }
       }
-      // 2) 비가시 신념 위치를 확률적으로 채택 (85%)
+      // 2) 신념 위치를 채택하되, 오래 못 본 기물은 흘려보낸 자리에 놓는다
+      const occupied = new Set();
+      for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) if (b[r][c] !== '.') occupied.add(`${r},${c}`);
+      const believed = [];
+      for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+        if (this.belief[r][c] && !vis.has(`${r},${c}`)) believed.push([r, c]);
+      }
+      // 상대는 한 턴에 한 기물만 움직인다. 그러니 이 샘플에서도 한두 개만 옮긴다.
+      // (전부 흘려보내면 적 군대 전체가 흩어져 평가가 노이즈가 된다)
+      const movers = new Set();
+      if (believed.length) {
+        const byAge = believed.slice().sort((x, y) => (this.age[y[0]][y[1]] || 0) - (this.age[x[0]][x[1]] || 0));
+        const k = Math.random() < 0.55 ? 1 : 2;
+        for (let i = 0; i < Math.min(k, byAge.length); i++) {
+          if ((this.age[byAge[i][0]][byAge[i][1]] || 0) > 0) movers.add(byAge[i].join(','));
+        }
+      }
+      for (const [r, c] of believed) {
+        const bel = this.belief[r][c];
+        const t = bel.toLowerCase();
+        if (!need[t] || need[t] <= 0) continue;
+        let rr = r, cc = c;
+        if (movers.has(`${r},${c}`)) {
+          const d = this.drift(r, c, bel, vis, occupied);
+          if (d) { rr = d.row; cc = d.col; }
+        }
+        if (b[rr][cc] !== '.' || vis.has(`${rr},${cc}`)) { rr = r; cc = c; }
+        if (b[rr][cc] !== '.' || vis.has(`${rr},${cc}`)) continue;
+        b[rr][cc] = bel; need[t] -= 1; occupied.add(`${rr},${cc}`);
+      }
       const empties = [];
       for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
-        if (b[r][c] !== '.' || vis.has(`${r},${c}`)) continue;   // 보이는 빈 칸엔 못 놓는다
-        const bel = this.belief[r][c];
-        if (bel && need[bel.toLowerCase()] > 0 && Math.random() < 0.85) {
-          b[r][c] = bel; need[bel.toLowerCase()] -= 1;
-        } else empties.push([r, c]);
+        if (b[r][c] === '.' && !vis.has(`${r},${c}`)) empties.push([r, c]);
       }
       // 3) 남은 재고를 그럴듯한 빈 비가시 칸에 배치 (적 진영 가중)
       const weight = ([r, c], t) => {
@@ -287,15 +330,27 @@
       }
       // 2) 집계: 평균 − λ·표준편차 − 결측 페널티 + 정찰 가치
       //    안개 체스에서 시야는 자원이다. 같은 값이면 더 많이 보는 수를 둔다.
+      // 믿는 적 킹 위치 — 접근하는 수에 가산 (안개 체스는 킹을 잡아야 끝난다)
+      let kr = -1, kc = -1;
+      const kCh2 = (this.color === 'white') ? 'k' : 'K';
+      for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) if (this.belief[r][c] === kCh2) { kr = r; kc = c; }
       let bestU = null, bestScore = -Infinity;
       for (const [u, arr] of Object.entries(agg)) {
         const mean = arr.reduce((a, x) => a + x, 0) / arr.length;
         const sd = Math.sqrt(arr.reduce((a, x) => a + (x - mean) * (x - mean), 0) / arr.length);
         const miss = Math.max(0, used - arr.length);
         const lossShare = arr.filter(x => x <= -8000).length / arr.length;   // 킹을 내주는 세계 비율
+        const winShare = arr.filter(x => x >= 8000).length / arr.length;
+        const mv = this.uciToMove(u);
         let s = mean - this.cfg.lambda * sd - this.cfg.missPenalty * (miss / Math.max(used, 1));
         s -= lossShare * 2600;                                              // 한 세계에서라도 킹이 날아가면 크게 깎는다
-        s += this.scoutGain(engine, this.uciToMove(u)) * (this.cfg.scout || 6);
+        s += winShare * 3000;
+        s += this.scoutGain(engine, mv) * (this.cfg.scout || 6);
+        if (kr >= 0) {
+          const before = Math.max(Math.abs(mv.from.row - kr), Math.abs(mv.from.col - kc));
+          const after = Math.max(Math.abs(mv.to.row - kr), Math.abs(mv.to.col - kc));
+          s += (before - after) * (this.cfg.hunt || 14);
+        }
         if (s > bestScore) { bestScore = s; bestU = u; }
       }
       if (!bestU) {   // 엔진이 아무것도 못 준 극단 케이스 → 임의 합법수
