@@ -1,0 +1,1154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fog of War Chess vs LLM</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #2c2c2c;
+      color: #fff;
+      display: flex;
+      min-height: 100vh;
+    }
+
+    #chess-container {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    #sidebar {
+      width: 420px;
+      background: #1a1a1a;
+      padding: 20px;
+      overflow-y: auto;
+      border-left: 1px solid #444;
+    }
+
+    h2 {
+      margin-bottom: 15px;
+      font-size: 18px;
+      color: #ffd700;
+    }
+
+    .section { margin-bottom: 25px; }
+
+    label {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 13px;
+      color: #ccc;
+    }
+
+    input, select, textarea {
+      width: 100%;
+      padding: 8px;
+      background: #333;
+      border: 1px solid #555;
+      color: #fff;
+      border-radius: 4px;
+      font-size: 13px;
+      margin-bottom: 10px;
+    }
+
+    button {
+      width: 100%;
+      padding: 10px;
+      background: #4a90e2;
+      border: none;
+      color: white;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+
+    button:hover { background: #357abd; }
+    button:disabled { background: #555; cursor: not-allowed; }
+
+    .radio-group {
+      display: flex;
+      gap: 15px;
+      margin-bottom: 10px;
+    }
+    .radio-group label { display: flex; align-items: center; gap: 5px; margin: 0; }
+    .radio-group input[type="radio"] { width: auto; margin: 0; }
+
+    #move-history {
+      background: #2a2a2a;
+      border: 1px solid #444;
+      border-radius: 4px;
+      padding: 10px;
+      max-height: 200px;
+      overflow-y: auto;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    #debug-log {
+      background: #1a1a1a;
+      border: 1px solid #444;
+      border-radius: 4px;
+      padding: 10px;
+      max-height: 440px;
+      overflow-y: auto;
+      font-family: 'Courier New', monospace;
+      font-size: 11px;
+      line-height: 1.5;
+      color: #0f0;
+    }
+
+    .log-entry { margin-bottom: 8px; padding: 4px; border-left: 3px solid #555; padding-left: 8px; }
+    .log-entry.info { border-left-color: #4a90e2; color: #4a90e2; }
+    .log-entry.success { border-left-color: #4caf50; color: #4caf50; }
+    .log-entry.warning { border-left-color: #ffa726; color: #ffa726; }
+    .log-entry.error { border-left-color: #f44336; color: #f44336; }
+    .log-entry.api { border-left-color: #9c27b0; color: #ce93d8; }
+    .log-timestamp { color: #888; font-size: 10px; }
+    .log-content { white-space: pre-wrap; word-break: break-all; }
+
+    #status {
+      padding: 10px;
+      background: #2a2a2a;
+      border-radius: 4px;
+      text-align: center;
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+
+    #llm-thinking {
+      padding: 10px;
+      background: #2a2a2a;
+      border: 1px solid #4a90e2;
+      border-radius: 4px;
+      font-size: 12px;
+      color: #4a90e2;
+      margin-bottom: 10px;
+      display: none;
+    }
+
+    .highlight { fill: rgba(255, 255, 0, 0.4) !important; }
+    .selected { fill: rgba(100, 200, 255, 0.5) !important; }
+    .piece.dragging { opacity: 0.5; }
+    .last-move { fill: rgba(155, 199, 0, 0.4) !important; }
+
+    #game-setup { display: block; }
+    #game-controls { display: none; }
+
+    .error { background: #d32f2f; color: white; padding: 8px; border-radius: 4px; font-size: 12px; margin-bottom: 10px; }
+    .btn-small { padding: 6px; font-size: 12px; }
+
+    /* Fog of War visuals */
+    .square.unseen { fill: #131313 !important; }
+    .square.known-empty { opacity: 1; }
+  </style>
+</head>
+<body>
+  <div id="chess-container">
+    <svg id="chess-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 720" width="600" height="600" aria-label="Chessboard with pieces">
+      <style>
+        #chess-svg {
+          --light: #f0d9b5;
+          --dark: #b58863;
+          --white-piece: #f7f7f7;
+          --black-piece: #222;
+          --white-stroke: #222;
+          --black-stroke: #f0f0f0;
+          --coord: #333;
+          --square-size: 80;
+          --margin: 40;
+          --label-size: 14px;
+        }
+        #board .square.light { fill: var(--light); }
+        #board .square.dark  { fill: var(--dark); }
+        #board .square { shape-rendering: crispEdges; cursor: pointer; }
+        #coords text { fill: var(--coord); font: 600 var(--label-size)/1 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; user-select: none; pointer-events: none; }
+        .piece { pointer-events: all; cursor: pointer; vector-effect: non-scaling-stroke; }
+        .piece.white { color: var(--white-piece); }
+        .piece.black { color: var(--black-piece); }
+        .piece.white .outline { stroke: var(--white-stroke); }
+        .piece.black .outline { stroke: var(--black-stroke); }
+        #board .square:hover { opacity: 0.95; }
+      </style>
+
+      <defs>
+        <symbol id="piece-pawn" viewBox="0 0 80 80" preserveAspectRatio="xMidYMid meet">
+          <circle cx="40" cy="22" r="9" fill="currentColor"/>
+          <rect x="32" y="30" width="16" height="6" rx="3" fill="currentColor"/>
+          <ellipse cx="40" cy="42" rx="14" ry="11" fill="currentColor"/>
+          <rect x="28" y="50" width="24" height="8" rx="4" fill="currentColor"/>
+          <rect x="20" y="60" width="40" height="8" rx="4" fill="currentColor"/>
+          <rect x="16" y="68" width="48" height="6" rx="3" fill="currentColor"/>
+        </symbol>
+        <symbol id="piece-rook" viewBox="0 0 80 80" preserveAspectRatio="xMidYMid meet">
+          <rect x="20" y="12" width="8" height="8" fill="currentColor"/>
+          <rect x="32" y="12" width="8" height="8" fill="currentColor"/>
+          <rect x="44" y="12" width="8" height="8" fill="currentColor"/>
+          <rect x="56" y="12" width="8" height="8" fill="currentColor"/>
+          <rect x="20" y="20" width="40" height="8" rx="2" fill="currentColor"/>
+          <rect x="24" y="28" width="32" height="28" rx="4" fill="currentColor"/>
+          <rect x="22" y="56" width="36" height="8" rx="4" fill="currentColor"/>
+          <rect x="16" y="64" width="48" height="8" rx="4" fill="currentColor"/>
+        </symbol>
+        <symbol id="piece-knight" viewBox="0 0 80 80" preserveAspectRatio="xMidYMid meet">
+          <rect x="24" y="62" width="32" height="8" rx="4" fill="currentColor"/>
+          <path fill="currentColor" d="M52 58 H42 c2-6 0-9 6-14 l-4-3 c-4 2-10 5-13 0 c-2-3 1-8 6-10 l-4-6 l7-8 l10 6 c1-4 7-6 12-3 l-2 7 l4 4 l-6 4 l2 6 l-6 4 l-3 10 H52 Z"/>
+        </symbol>
+        <symbol id="piece-bishop" viewBox="0 0 80 80" preserveAspectRatio="xMidYMid meet">
+          <circle cx="40" cy="18" r="7" fill="currentColor"/>
+          <rect x="34" y="24" width="12" height="6" rx="3" fill="currentColor"/>
+          <ellipse cx="40" cy="42" rx="15" ry="18" fill="currentColor"/>
+          <rect x="26" y="56" width="28" height="8" rx="4" fill="currentColor"/>
+          <rect x="18" y="64" width="44" height="8" rx="4" fill="currentColor"/>
+        </symbol>
+        <symbol id="piece-queen" viewBox="0 0 80 80" preserveAspectRatio="xMidYMid meet">
+          <circle cx="24" cy="16" r="4" fill="currentColor"/>
+          <circle cx="32" cy="14" r="4" fill="currentColor"/>
+          <circle cx="40" cy="12" r="4" fill="currentColor"/>
+          <circle cx="48" cy="14" r="4" fill="currentColor"/>
+          <circle cx="56" cy="16" r="4" fill="currentColor"/>
+          <path d="M24 20 L56 20 L48 28 L32 28 Z" fill="currentColor"/>
+          <ellipse cx="40" cy="44" rx="18" ry="16" fill="currentColor"/>
+          <rect x="24" y="56" width="32" height="8" rx="4" fill="currentColor"/>
+          <rect x="16" y="64" width="48" height="8" rx="4" fill="currentColor"/>
+        </symbol>
+        <symbol id="piece-king" viewBox="0 0 80 80" preserveAspectRatio="xMidYMid meet">
+          <rect x="38" y="10" width="4" height="16" fill="currentColor"/>
+          <rect x="32" y="16" width="16" height="4" fill="currentColor"/>
+          <rect x="34" y="26" width="12" height="6" rx="3" fill="currentColor"/>
+          <ellipse cx="40" cy="44" rx="16" ry="18" fill="currentColor"/>
+          <rect x="24" y="58" width="32" height="8" rx="4" fill="currentColor"/>
+          <rect x="16" y="66" width="48" height="8" rx="4" fill="currentColor"/>
+        </symbol>
+      </defs>
+
+      <g id="board" transform="translate(40,40)"></g>
+      <g id="coords">
+        <text x="80"  y="700" text-anchor="middle">a</text>
+        <text x="160" y="700" text-anchor="middle">b</text>
+        <text x="240" y="700" text-anchor="middle">c</text>
+        <text x="320" y="700" text-anchor="middle">d</text>
+        <text x="400" y="700" text-anchor="middle">e</text>
+        <text x="480" y="700" text-anchor="middle">f</text>
+        <text x="560" y="700" text-anchor="middle">g</text>
+        <text x="640" y="700" text-anchor="middle">h</text>
+        <text x="80"  y="24" text-anchor="middle">a</text>
+        <text x="160" y="24" text-anchor="middle">b</text>
+        <text x="240" y="24" text-anchor="middle">c</text>
+        <text x="320" y="24" text-anchor="middle">d</text>
+        <text x="400" y="24" text-anchor="middle">e</text>
+        <text x="480" y="24" text-anchor="middle">f</text>
+        <text x="560" y="24" text-anchor="middle">g</text>
+        <text x="640" y="24" text-anchor="middle">h</text>
+        <text x="24" y="80"  text-anchor="middle">8</text>
+        <text x="24" y="160" text-anchor="middle">7</text>
+        <text x="24" y="240" text-anchor="middle">6</text>
+        <text x="24" y="320" text-anchor="middle">5</text>
+        <text x="24" y="400" text-anchor="middle">4</text>
+        <text x="24" y="480" text-anchor="middle">3</text>
+        <text x="24" y="560" text-anchor="middle">2</text>
+        <text x="24" y="640" text-anchor="middle">1</text>
+        <text x="696" y="80"  text-anchor="middle">8</text>
+        <text x="696" y="160" text-anchor="middle">7</text>
+        <text x="696" y="240" text-anchor="middle">6</text>
+        <text x="696" y="320" text-anchor="middle">5</text>
+        <text x="696" y="400" text-anchor="middle">4</text>
+        <text x="696" y="480" text-anchor="middle">3</text>
+        <text x="696" y="560" text-anchor="middle">2</text>
+        <text x="696" y="640" text-anchor="middle">1</text>
+      </g>
+      <g id="pieces" transform="translate(40,40)"></g>
+    </svg>
+  </div>
+
+  <div id="sidebar">
+    <div class="section">
+      <h2>API Configuration</h2>
+      <label>API Base URL</label>
+      <input type="text" id="api-base" placeholder="https://api.openai.com/v1">
+      
+      <label>API Key</label>
+      <input type="password" id="api-key" placeholder="sk-...">
+      
+      <label>Model Name</label>
+      <input type="text" id="api-model" placeholder="gpt-4o-mini">
+    </div>
+
+      <div id="game-setup">
+        <div class="section">
+          <h2>New Game</h2>
+        
+        <label>Play as:</label>
+        <div class="radio-group">
+          <label><input type="radio" name="color" value="white" checked> White</label>
+          <label><input type="radio" name="color" value="black"> Black</label>
+        </div>
+
+          <label>LLM Mode:</label>
+          <div class="radio-group">
+            <label><input type="radio" name="mode" value="pgn" checked> PGN Only</label>
+            <label><input type="radio" name="mode" value="history"> PGN + History</label>
+          </div>
+
+          <label>Visibility:</label>
+          <div class="radio-group">
+            <label><input type="checkbox" id="vis-only-turn"> Show visibility only on my turn</label>
+          </div>
+
+          <button id="start-game">Start New Game</button>
+        </div>
+      </div>
+
+    <div id="game-controls">
+      <div class="section">
+        <div id="status">Ready</div>
+        <div id="llm-thinking">LLM is thinking...</div>
+        <button id="new-game">New Game</button>
+      </div>
+
+      <div class="section">
+        <h2>Move History</h2>
+        <div id="move-history"></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Debug Log</h2>
+      <button id="clear-log" class="btn-small">Clear Log</button>
+      <div id="debug-log"></div>
+    </div>
+  </div>
+
+  <!-- Load chess.js from CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+
+  <script>
+    // ==================== LOGGER ====================
+    class Logger {
+      constructor() { this.logElement = null; }
+      setElement(element) { this.logElement = element; }
+      log(message, type = 'info', data = null) {
+        const entry = document.createElement('div');
+        entry.className = `log-entry ${type}`;
+        const row = document.createElement('div');
+        row.className = 'log-content';
+        const ts = document.createElement('span');
+        ts.className = 'log-timestamp';
+        ts.textContent = `[${new Date().toLocaleTimeString()}]`;
+        const text = document.createElement('span');
+        text.textContent = ` ${message}`;
+        row.appendChild(ts);
+        row.appendChild(text);
+        if (data !== null && data !== undefined) {
+          const pre = document.createElement('pre');
+          pre.textContent = (typeof data === 'string') ? data : JSON.stringify(data, null, 2);
+          row.appendChild(document.createTextNode('\n'));
+          row.appendChild(pre);
+        }
+        entry.appendChild(row);
+        if (this.logElement) { this.logElement.appendChild(entry); this.logElement.scrollTop = this.logElement.scrollHeight; }
+        console.log(`[${type.toUpperCase()}] ${message}`, data || '');
+      }
+      info(message, data) { this.log(message, 'info', data); }
+      success(message, data) { this.log(message, 'success', data); }
+      warning(message, data) { this.log(message, 'warning', data); }
+      error(message, data) { this.log(message, 'error', data); }
+      api(message, data) { this.log(message, 'api', data); }
+      clear() { if (this.logElement) this.logElement.innerHTML = ''; }
+    }
+    const logger = new Logger();
+
+    // ==================== CHESS ENGINE WRAPPER + FOG ====================
+    class ChessEngine {
+      constructor() {
+        this.chess = new Chess();
+        // Variant state
+        this.board = this.readBoardFromChess(); // 8x8 char grid ('.' for empty)
+        this.currentTurn = 'white';
+        this.fullmove = 1;
+        this.castling = { white: { k: true, q: true }, black: { k: true, q: true } };
+        this.kingCaptured = null; // { winner }
+        this.history = []; // fog-aware history entries
+        this.enPassant = null; // { row, col } square where EP capture lands
+        logger.info('Chess engine initialized');
+      }
+
+      reset() {
+        this.chess.reset();
+        this.board = this.readBoardFromChess();
+        this.currentTurn = 'white';
+        this.fullmove = 1;
+        this.castling = { white: { k: true, q: true }, black: { k: true, q: true } };
+        this.kingCaptured = null;
+        this.enPassant = null;
+        this.history = [];
+        logger.info('Chess engine reset to initial position');
+      }
+
+      algebraicToCoords(square) {
+        const file = square.charCodeAt(0) - 97;
+        const rank = 8 - parseInt(square[1]);
+        return { row: rank, col: file };
+      }
+
+      coordsToAlgebraic(row, col) {
+        return String.fromCharCode(97 + col) + (8 - row);
+      }
+
+      getPiece(row, col) {
+        const ch = this.board[row][col];
+        if (!ch || ch === '.') return null;
+        const color = ch === ch.toUpperCase() ? 'white' : 'black';
+        const map = { p: 'pawn', n: 'knight', b: 'bishop', r: 'rook', q: 'queen', k: 'king' };
+        return { type: map[ch.toLowerCase()], color };
+      }
+
+      convertPieceType(type) { const map = { p: 'pawn', n: 'knight', b: 'bishop', r: 'rook', q: 'queen', k: 'king' }; return map[type] || type; }
+      convertPieceTypeToChessJs(type) { const map = { pawn: 'p', knight: 'n', bishop: 'b', rook: 'r', queen: 'q', king: 'k' }; return map[type] || type; }
+
+      getLegalMovesForPiece(row, col) {
+        const moves = this.generatePseudoLegalMovesForSquare(row, col);
+        return moves.map(m => ({ from: { row, col }, to: { row: m.row, col: m.col }, promotion: m.promotion }));
+      }
+
+      makeMove(move) {
+        const from = { r: move.from.row, c: move.from.col };
+        const to = { r: move.to.row, c: move.to.col };
+        const moving = this.board[from.r][from.c];
+        if (!moving || moving === '.') { logger.error('No piece at source'); return null; }
+        const movingColor = moving === moving.toUpperCase() ? 'white' : 'black';
+        if (movingColor !== this.currentTurn) { logger.error('Wrong side to move'); return null; }
+        let captured = this.board[to.r][to.c];
+
+        // Castling if king moves two files from starting square
+        const isKing = moving.toLowerCase() === 'k';
+        if (isKing && Math.abs(to.c - from.c) === 2 && ((movingColor === 'white' && from.r === 7) || (movingColor === 'black' && from.r === 0))) {
+          if (to.c === 6) { // O-O
+            const rookFrom = { r: from.r, c: 7 }, rookTo = { r: from.r, c: 5 };
+            this.board[rookTo.r][rookTo.c] = this.board[rookFrom.r][rookFrom.c];
+            this.board[rookFrom.r][rookFrom.c] = '.';
+          } else if (to.c === 2) { // O-O-O
+            const rookFrom = { r: from.r, c: 0 }, rookTo = { r: from.r, c: 3 };
+            this.board[rookTo.r][rookTo.c] = this.board[rookFrom.r][rookFrom.c];
+            this.board[rookFrom.r][rookFrom.c] = '.';
+          }
+        }
+
+        // Promotion handling
+        let placed = moving;
+        const isPawn = moving.toLowerCase() === 'p';
+        const dir = (movingColor === 'white') ? -1 : 1;
+        // En passant capture detection: pawn moves diagonally to empty square equal to EP square
+        if (isPawn && this.enPassant && to.r === this.enPassant.row && to.c === this.enPassant.col && Math.abs(to.c - from.c) === 1 && to.r - from.r === dir && (!captured || captured === '.')) {
+          const capR = to.r - dir; const capC = to.c;
+          captured = this.board[capR][capC];
+          this.board[capR][capC] = '.'; // remove the pawn that moved two squares last turn
+        }
+        if (isPawn) {
+          const lastRank = (movingColor === 'white') ? 0 : 7;
+          if (to.r === lastRank) {
+            const promo = (move.promotion || 'queen').toLowerCase();
+            const map = { queen: 'q', rook: 'r', bishop: 'b', knight: 'n', q: 'q', r: 'r', b: 'b', n: 'n' };
+            const p = map[promo] || 'q';
+            placed = (movingColor === 'white') ? p.toUpperCase() : p;
+          }
+        }
+
+        // Apply move
+        this.board[to.r][to.c] = placed;
+        this.board[from.r][from.c] = '.';
+
+        // Update castling rights
+        if (moving.toLowerCase() === 'k') { this.castling[movingColor].k = false; this.castling[movingColor].q = false; }
+        if (moving.toLowerCase() === 'r') {
+          if (movingColor === 'white') { if (from.r === 7 && from.c === 0) this.castling.white.q = false; if (from.r === 7 && from.c === 7) this.castling.white.k = false; }
+          else { if (from.r === 0 && from.c === 0) this.castling.black.q = false; if (from.r === 0 && from.c === 7) this.castling.black.k = false; }
+        }
+        // If captured a rook on its home square, update opponent rights
+        if (captured && captured.toLowerCase() === 'r') {
+          const opp = (movingColor === 'white') ? 'black' : 'white';
+          if (opp === 'white') {
+            if (to.r === 7 && to.c === 0) this.castling.white.q = false;
+            if (to.r === 7 && to.c === 7) this.castling.white.k = false;
+          } else {
+            if (to.r === 0 && to.c === 0) this.castling.black.q = false;
+            if (to.r === 0 && to.c === 7) this.castling.black.k = false;
+          }
+        }
+
+        if (captured && captured.toLowerCase() === 'k') { this.kingCaptured = { winner: movingColor }; }
+
+        const san = this.buildSimpleSAN({ from, to, moving, captured, promotion: placed !== moving ? placed : null });
+        // Update EP target: if a pawn moved two squares, set ep to the passed-over square, else clear
+        if (isPawn && Math.abs(to.r - from.r) === 2) {
+          this.enPassant = { row: (from.r + to.r) / 2, col: from.c };
+        } else {
+          this.enPassant = null;
+        }
+        if (this.currentTurn === 'black') this.fullmove += 1;
+        this.currentTurn = (this.currentTurn === 'white') ? 'black' : 'white';
+        this.syncChessFromBoard();
+        return san;
+      }
+
+      parseSAN(san, color) {
+        const s = san.replace(/[+#]/g, '').trim();
+        if (/^O-O(-O)?$/i.test(s)) {
+          const row = (color === 'white') ? 7 : 0;
+          return { from: { row, col: 4 }, to: { row, col: s.toUpperCase() === 'O-O' ? 6 : 2 } };
+        }
+        let rest = s;
+        let promo = null;
+        const pm = rest.match(/=([QRBNqrbn])/); if (pm) { promo = this.convertPieceType(pm[1].toLowerCase()); rest = rest.replace(/=([QRBNqrbn])/, ''); }
+        const dm = rest.match(/([a-h][1-8])$/); if (!dm) throw new Error('Invalid SAN');
+        const dest = dm[1]; const to = this.algebraicToCoords(dest); rest = rest.slice(0, rest.length - 2);
+        const isCap = rest.includes('x'); rest = rest.replace('x','');
+        let pieceType = 'pawn'; if (/^[KQRBN]/.test(rest)) { pieceType = this.convertPieceType(rest[0].toLowerCase()); rest = rest.slice(1); }
+        let disFile = null, disRank = null; if (rest.length === 1) { if (/[a-h]/.test(rest)) disFile = rest; else if (/[1-8]/.test(rest)) disRank = rest; } else if (rest.length === 2 && /[a-h][1-8]/.test(rest)) { disFile = rest[0]; disRank = rest[1]; }
+        const cands = this.generatePseudoLegalMoves(color, pieceType).filter(m => m.to.row === to.row && m.to.col === to.col).filter(m => {
+          const cap = this.board[m.to.row][m.to.col];
+          if (isCap) {
+            // Non-pawn captures require a piece on destination
+            const movingCh = this.board[m.from.row][m.from.col];
+            const isPawnMoving = movingCh && movingCh.toLowerCase() === 'p';
+            if (!isPawnMoving) {
+              if (!cap || cap === '.') return false;
+            } else {
+              // Pawn capture: allow if piece present OR en passant target
+              if ((!cap || cap === '.') && !(this.enPassant && this.enPassant.row === m.to.row && this.enPassant.col === m.to.col && Math.abs(m.to.col - m.from.col) === 1)) return false;
+            }
+          } else {
+            // Non-capture: require empty destination
+            if (cap && cap !== '.') return false;
+          }
+          if (disFile && String.fromCharCode(97 + m.from.col) !== disFile) return false;
+          if (disRank && String(8 - m.from.row) !== disRank) return false;
+          return true;
+        });
+        if (!cands.length) throw new Error('No matching move');
+        const best = cands[0]; const res = { from: { row: best.from.row, col: best.from.col }, to: { row: best.to.row, col: best.to.col } };
+        if (promo) res.promotion = promo; return res;
+      }
+
+      // Fog-of-War: compute which squares are visible to a color
+      getVisibleSet(color) {
+        const visible = new Set();
+        const add = (r, c) => visible.add(`${r},${c}`);
+        for (let r = 0; r < 8; r++) {
+          for (let c = 0; c < 8; c++) {
+            const ch = this.board[r][c];
+            if (!ch || ch === '.') continue;
+            const pc = (ch === ch.toUpperCase()) ? 'white' : 'black';
+            if (pc !== color) continue;
+            add(r, c);
+            const moves = this.generatePseudoLegalMovesForSquare(r, c);
+            for (const m of moves) add(m.row, m.col);
+          }
+        }
+        return visible;
+      }
+
+      getVisibleMap(color) {
+        const set = this.getVisibleSet(color);
+        const map = Array.from({ length: 8 }, () => Array(8).fill(false));
+        set.forEach(key => { const [r, c] = key.split(',').map(Number); map[r][c] = true; });
+        return map;
+      }
+
+      getFogAscii(color) {
+        const vis = this.getVisibleSet(color);
+        const board = this.chess.board();
+        const rows = [];
+        rows.push('  +------------------------+');
+        for (let r = 0; r < 8; r++) {
+          const rank = 8 - r;
+          let line = `${rank} |`;
+          for (let c = 0; c < 8; c++) {
+            let ch = '?';
+            if (vis.has(`${r},${c}`)) {
+              const p = board[r][c];
+              if (!p) ch = '.'; else ch = (p.color === 'w') ? p.type.toUpperCase() : p.type;
+            }
+            line += ` ${ch} `;
+          }
+          line += '|';
+          rows.push(line);
+        }
+        rows.push('  +------------------------+');
+        rows.push('     a  b  c  d  e  f  g  h');
+        return rows.join('\n');
+      }
+
+      isInCheck(color) { return false; }
+      isCheckmate() { return false; }
+      isStalemate() { return false; }
+      isGameOver() { if (this.kingCaptured) return { over: true, result: 'king capture', winner: this.kingCaptured.winner }; return { over: false }; }
+
+      getFogPGNForViewer(viewerColor, revealAll = false) {
+        const lines = [];
+        for (let i = 0; i < this.history.length; i += 2) {
+          const moveNum = Math.floor(i / 2) + 1;
+          const w = this.history[i];
+          const b = this.history[i + 1];
+          const ws = w ? (revealAll || (viewerColor === 'white' ? w.visibleToWhite : w.visibleToBlack) ? w.san : '…') : '';
+          const bs = b ? (revealAll || (viewerColor === 'white' ? b.visibleToWhite : b.visibleToBlack) ? b.san : '…') : '';
+          lines.push(`${moveNum}. ${ws}${bs ? ' ' + bs : ''}`);
+        }
+        return lines.join('\n');
+      }
+
+      get turn() { return this.currentTurn; }
+      get moveHistory() { return this.history.map(h => h.san); }
+
+      // ===== Helpers for variant state =====
+      readBoardFromChess() {
+        const b = this.chess.board();
+        const grid = Array.from({ length: 8 }, () => Array(8).fill('.'));
+        for (let r = 0; r < 8; r++) {
+          for (let c = 0; c < 8; c++) {
+            const p = b[r][c];
+            if (!p) continue;
+            const ch = (p.color === 'w') ? p.type.toUpperCase() : p.type;
+            grid[r][c] = ch;
+          }
+        }
+        return grid;
+      }
+
+      syncChessFromBoard() {
+        const rows = [];
+        for (let r = 0; r < 8; r++) {
+          let row = '';
+          let empty = 0;
+          for (let c = 0; c < 8; c++) {
+            const ch = this.board[r][c];
+            if (!ch || ch === '.') empty++;
+            else { if (empty) { row += String(empty); empty = 0; } row += ch; }
+          }
+          if (empty) row += String(empty);
+          rows.push(row);
+        }
+        const pieces = rows.join('/');
+        const side = this.currentTurn === 'white' ? 'w' : 'b';
+        const rights = `${this.castling.white.k ? 'K' : ''}${this.castling.white.q ? 'Q' : ''}${this.castling.black.k ? 'k' : ''}${this.castling.black.q ? 'q' : ''}` || '-';
+        const fen = `${pieces} ${side} ${rights} - 0 ${this.fullmove}`;
+        try { this.chess.load(fen); } catch (e) { logger.error('FEN load failed', { fen, error: e.message }); }
+      }
+
+      generatePseudoLegalMovesForSquare(r, c) {
+        const piece = this.board[r][c]; if (!piece || piece === '.') return [];
+        const color = (piece === piece.toUpperCase()) ? 'white' : 'black';
+        const t = piece.toLowerCase();
+        const res = [];
+        const isEnemy = (rr, cc) => { const p = this.board[rr][cc]; if (!p || p === '.') return false; return (p === p.toUpperCase()) ? (color === 'black') : (color === 'white'); };
+        const isEmpty = (rr, cc) => { const p = this.board[rr][cc]; return (!p || p === '.'); };
+        const ray = (dr, dc) => { let rr = r + dr, cc = c + dc; while (rr>=0 && rr<8 && cc>=0 && cc<8) { if (isEmpty(rr,cc)) res.push({ row: rr, col: cc }); else { if (isEnemy(rr,cc)) res.push({ row: rr, col: cc }); break; } rr += dr; cc += dc; } };
+        switch (t) {
+          case 'p': {
+            const dir = (color === 'white') ? -1 : 1; const startRow = (color === 'white') ? 6 : 1;
+            if (r+dir>=0 && r+dir<8 && isEmpty(r+dir, c)) res.push({ row: r+dir, col: c });
+            if (r === startRow && isEmpty(r+dir, c) && isEmpty(r+2*dir, c)) res.push({ row: r+2*dir, col: c });
+            if (r+dir>=0 && r+dir<8 && c-1>=0 && isEnemy(r+dir, c-1)) res.push({ row: r+dir, col: c-1 });
+            if (r+dir>=0 && r+dir<8 && c+1<8 && isEnemy(r+dir, c+1)) res.push({ row: r+dir, col: c+1 });
+            // En passant pseudo-legal
+            if (this.enPassant) {
+              if (r+dir>=0 && r+dir<8 && c-1>=0 && this.enPassant.row === r+dir && this.enPassant.col === c-1) res.push({ row: r+dir, col: c-1 });
+              if (r+dir>=0 && r+dir<8 && c+1<8 && this.enPassant.row === r+dir && this.enPassant.col === c+1) res.push({ row: r+dir, col: c+1 });
+            }
+            break;
+          }
+          case 'n': { const opts = [[-2,-1],[-2,1],[2,-1],[2,1],[-1,-2],[-1,2],[1,-2],[1,2]]; for (const [dr,dc] of opts){const rr=r+dr,cc=c+dc; if(rr<0||rr>=8||cc<0||cc>=8) continue; const p=this.board[rr][cc]; if(!p||p==='.'||((p===p.toUpperCase())?(color==='black'):(color==='white'))) res.push({row:rr,col:cc});} break; }
+          case 'b': ray(-1,-1); ray(-1,1); ray(1,-1); ray(1,1); break;
+          case 'r': ray(-1,0); ray(1,0); ray(0,-1); ray(0,1); break;
+          case 'q': ray(-1,-1); ray(-1,1); ray(1,-1); ray(1,1); ray(-1,0); ray(1,0); ray(0,-1); ray(0,1); break;
+          case 'k': {
+            for (let dr=-1; dr<=1; dr++) for (let dc=-1; dc<=1; dc++) { if (dr===0&&dc===0) continue; const rr=r+dr, cc=c+dc; if (rr<0||rr>=8||cc<0||cc>=8) continue; const p=this.board[rr][cc]; if(!p||p==='.'||((p===p.toUpperCase())?(color==='black'):(color==='white'))) res.push({row:rr,col:cc}); }
+            const row = (color === 'white') ? 7 : 0; if (r===row && c===4) {
+              if (this.castling[color].k && this.board[row][5]==='.' && this.board[row][6]==='.' && this.board[row][7]===((color==='white')?'R':'r')) res.push({row, col:6});
+              if (this.castling[color].q && this.board[row][3]==='.' && this.board[row][2]==='.' && this.board[row][1]==='.' && this.board[row][0]===((color==='white')?'R':'r')) res.push({row, col:2});
+            }
+            break;
+          }
+        }
+        return res;
+      }
+
+      generatePseudoLegalMoves(color, pieceType) {
+        const map = { pawn:'p', knight:'n', bishop:'b', rook:'r', queen:'q', king:'k' };
+        const tgt = map[pieceType]; const res = [];
+        for (let r=0;r<8;r++) for (let c=0;c<8;c++) { const ch=this.board[r][c]; if(!ch||ch==='.') continue; const pc=(ch===ch.toUpperCase())?'white':'black'; if(pc!==color) continue; if(ch.toLowerCase()!==tgt) continue; const moves=this.generatePseudoLegalMovesForSquare(r,c); for (const m of moves) res.push({ from:{row:r,col:c}, to:{row:m.row,col:m.col} }); }
+        return res;
+      }
+
+      buildSimpleSAN({ from, to, moving, captured, promotion }) {
+        if (moving.toLowerCase() === 'k' && Math.abs(to.col - from.c) === 2) return (to.col === 6 ? 'O-O' : 'O-O-O');
+        const pieceLetterMap = { p:'', n:'N', b:'B', r:'R', q:'Q', k:'K' };
+        const piece = moving.toLowerCase(); const fromSq = this.coordsToAlgebraic(from.r, from.c); const toSq = this.coordsToAlgebraic(to.row, to.col);
+        const isCap = !!captured && captured !== '.';
+        if (piece === 'p') {
+          const file = fromSq[0]; const base = isCap ? `${file}x${toSq}` : `${toSq}`;
+          if (promotion) { const map = { q:'Q', r:'R', b:'B', n:'N' }; const letter = map[(promotion||'').toString().toLowerCase()] || 'Q'; return `${base}=${letter}`; }
+          return base;
+        } else {
+          const letter = pieceLetterMap[piece]; return `${letter}${isCap ? 'x' : ''}${toSq}`;
+        }
+      }
+
+      addHistoryEntry({ san, color, from, to, oppVisSet = null }) {
+        const opp = color === 'white' ? 'black' : 'white';
+        const oppVis = oppVisSet || this.getVisibleSet(opp);
+        const toKey = `${to.row},${to.col}`;
+        const visibleToOpp = oppVis.has(toKey);
+        const entry = { san, color, from, to, visibleToWhite: (color === 'black') ? visibleToOpp : true, visibleToBlack: (color === 'white') ? visibleToOpp : true };
+        this.history.push(entry);
+      }
+    }
+
+    // ==================== UI CONTROLLER (Fog rendering) ====================
+    class ChessUI {
+      constructor(engine) {
+        this.engine = engine;
+        this.selectedSquare = null;
+        this.onMove = null;
+        this.playerColor = 'white';
+        this.isEnabled = false;
+        this.visibleSet = new Set();
+        this.showVisOnlyOnTurn = false;
+        this.setupBoard();
+      }
+
+      setupBoard() {
+        const board = document.getElementById('board');
+        board.innerHTML = '';
+        for (let row = 0; row < 8; row++) {
+          for (let col = 0; col < 8; col++) {
+            const square = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+            const isLight = (row + col) % 2 === 0;
+            square.setAttribute('x', col * 80);
+            square.setAttribute('y', row * 80);
+            square.setAttribute('width', 80);
+            square.setAttribute('height', 80);
+            square.setAttribute('class', `square ${isLight ? 'light' : 'dark'}`);
+            square.setAttribute('data-row', row);
+            square.setAttribute('data-col', col);
+            square.addEventListener('click', () => this.onSquareClick(row, col));
+            board.appendChild(square);
+          }
+        }
+        this.refreshFog();
+        this.renderPieces();
+      }
+
+      refreshFog() {
+        // If configured, only update visibility when it's the player's turn
+        if (this.showVisOnlyOnTurn && this.engine.turn !== this.playerColor) return;
+        const vis = this.engine.getVisibleSet(this.playerColor);
+        this.visibleSet = vis;
+        for (let row = 0; row < 8; row++) {
+          for (let col = 0; col < 8; col++) {
+            const sq = this.getSquareElement(row, col);
+            const key = `${row},${col}`;
+            if (vis.has(key)) sq.classList.remove('unseen'); else sq.classList.add('unseen');
+          }
+        }
+      }
+
+      renderPieces() {
+        const piecesGroup = document.getElementById('pieces');
+        piecesGroup.innerHTML = '';
+        const isVisible = (r, c) => this.visibleSet.has(`${r},${c}`);
+        for (let row = 0; row < 8; row++) {
+          for (let col = 0; col < 8; col++) {
+            const piece = this.engine.getPiece(row, col);
+            if (!piece) continue;
+            const isOwn = piece.color === this.playerColor;
+            if (isOwn || isVisible(row, col)) {
+              this.createPieceElement(row, col, piece, piecesGroup);
+            }
+          }
+        }
+      }
+
+      createPieceElement(row, col, piece, parent) {
+        const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+        use.setAttributeNS('http://www.w3.org/1999/xlink', 'href', `#piece-${piece.type}`);
+        use.setAttribute('class', `piece ${piece.color} ${piece.type}`);
+        use.setAttribute('x', col * 80);
+        use.setAttribute('y', row * 80);
+        use.setAttribute('width', 80);
+        use.setAttribute('height', 80);
+        use.setAttribute('data-row', row);
+        use.setAttribute('data-col', col);
+        use.addEventListener('click', (e) => { e.stopPropagation(); this.onPieceClick(row, col); });
+        parent.appendChild(use);
+      }
+
+      onPieceClick(row, col) {
+        if (!this.isEnabled || this.engine.turn !== this.playerColor) return;
+        const piece = this.engine.getPiece(row, col);
+        if (piece && piece.color === this.playerColor) {
+          if (this.selectedSquare && this.selectedSquare.row === row && this.selectedSquare.col === col) {
+            logger.info('Deselecting piece');
+            this.clearSelection();
+          } else {
+            logger.info(`Selecting piece at row=${row}, col=${col}`, piece);
+            this.selectedSquare = { row, col };
+            this.highlightMoves(row, col);
+          }
+        } else if (this.selectedSquare) {
+          this.onSquareClick(row, col);
+        }
+      }
+
+      onSquareClick(row, col) {
+        if (!this.isEnabled || this.engine.turn !== this.playerColor) return;
+        if (this.selectedSquare) {
+          const move = this.findMove(this.selectedSquare.row, this.selectedSquare.col, row, col);
+          if (move) {
+            logger.info(`Player attempting move to row=${row}, col=${col}`);
+            this.clearSelection();
+            if (this.onMove) this.onMove(move);
+          } else {
+            logger.warning(`Illegal move attempt to row=${row}, col=${col}`);
+            this.clearSelection();
+          }
+        }
+      }
+
+      findMove(fromRow, fromCol, toRow, toCol) {
+        const moves = this.engine.getLegalMovesForPiece(fromRow, fromCol);
+        const candidates = moves.filter(m => m.to.row === toRow && m.to.col === toCol);
+        if (candidates.length === 0) return null;
+        if (candidates.length === 1) return candidates[0];
+        return candidates.find(m => m.promotion === 'queen') || candidates[0];
+      }
+
+      highlightMoves(row, col) {
+        this.clearHighlights();
+        const square = this.getSquareElement(row, col);
+        if (square) square.classList.add('selected');
+        const moves = this.engine.getLegalMovesForPiece(row, col);
+        moves.forEach(move => { const target = this.getSquareElement(move.to.row, move.to.col); if (target) target.classList.add('highlight'); });
+      }
+
+      clearSelection() { this.selectedSquare = null; this.clearHighlights(); }
+      clearHighlights() { document.querySelectorAll('.square.highlight, .square.selected').forEach(sq => sq.classList.remove('highlight', 'selected')); }
+      clearLastMoveHighlight() { document.querySelectorAll('.square.last-move').forEach(sq => sq.classList.remove('last-move')); }
+      highlightLastMove(from, to) {
+        this.clearLastMoveHighlight();
+        const fromSquare = this.getSquareElement(from.row, from.col);
+        const toSquare = this.getSquareElement(to.row, to.col);
+        if (fromSquare) fromSquare.classList.add('last-move');
+        if (toSquare) toSquare.classList.add('last-move');
+      }
+      getSquareElement(row, col) { return document.querySelector(`#board .square[data-row="${row}"][data-col="${col}"]`); }
+      async animateMove(move) { const { from, to } = move; this.highlightLastMove(from, to); await new Promise(r => setTimeout(r, 100)); }
+      setPlayerColor(color) { this.playerColor = color; logger.info(`Player color set to: ${color}`); this.refreshFog(); }
+      enable() { this.isEnabled = true; logger.info('UI enabled - player can make moves'); }
+      disable() { this.isEnabled = false; this.clearSelection(); logger.info('UI disabled - player cannot make moves'); }
+    }
+
+    // ==================== API HANDLER (LLM) ====================
+    class LLMPlayer {
+      constructor() {
+        this.baseUrl = '';
+        this.apiKey = '';
+        this.model = '';
+        this.mode = 'pgn';
+        this.conversationHistory = [];
+        this.retryDelay = 2000;
+        this.maxRetryDelay = 60000;
+      }
+
+      configure(baseUrl, apiKey, model, mode) {
+        this.baseUrl = baseUrl; this.apiKey = apiKey; this.model = model; this.mode = mode; this.conversationHistory = []; this.resetRetryDelay();
+        logger.success('LLM configured', { baseUrl, model, mode, apiKeySet: apiKey ? 'Yes (hidden)' : 'No' });
+      }
+
+      resetRetryDelay() { this.retryDelay = 2000; }
+      increaseRetryDelay() { const old = this.retryDelay; if (this.retryDelay === 2000) this.retryDelay = 10000; else if (this.retryDelay === 10000) this.retryDelay = 30000; else if (this.retryDelay === 30000) this.retryDelay = 60000; logger.warning(`Retry delay increased from ${old}ms to ${this.retryDelay}ms`); }
+
+      async getMove(pgn, color, { visibleAscii, illegalPrevMove } = {}) {
+        const colorName = color === 'white' ? 'White' : 'Black';
+
+        const fogSummary = [
+          'Fog of War rules used here:',
+          '- You only see squares your pieces can legally move to (plus your own pieces).',
+          "- Unseen squares are unknown ('?'); empty visible squares are '.'.",
+          '- Pawns also see diagonally forward squares only if an enemy piece is there (capturable).',
+          '- Self-check (moving into check) is allowed; there is no check or checkmate. The game ends only when a king is captured.',
+          '- All other standard chess movement rules apply (e.g., pawns cannot move through pieces).'
+        ].join('\n');
+
+        const illegalNote = illegalPrevMove ? `\nNote: Your previous proposed move "${illegalPrevMove}" was illegal in this position. Please choose a legal move.` : '';
+
+        const prompt = `You are playing chess as ${colorName} with Fog of War information.
+${fogSummary}
+
+Current game PGN:${pgn ? `\n${pgn}` : '\n(Starting position)'}
+
+Your visible board (${colorName} perspective):
+${visibleAscii}
+${illegalNote}
+
+It is your turn. Output exactly one legal move in SAN wrapped in angle brackets, e.g. <e4>, <Nf3>, <Qxd5>, <O-O>. Do not include any extra angle-bracketed text.`;
+
+        logger.info(`Requesting move from LLM for ${colorName}`);
+        logger.info('Prompt being sent:', { prompt });
+
+        let attemptCount = 0;
+        while (true) {
+          attemptCount++;
+          logger.info(`LLM request attempt #${attemptCount}`);
+          try {
+            const messages = this.mode === 'history' 
+              ? [...this.conversationHistory, { role: 'user', content: prompt }]
+              : [{ role: 'user', content: prompt }];
+
+            const requestBody = { model: this.model, messages, temperature: 0.7 };
+            const requestBodyJSON = JSON.stringify(requestBody, null, 2);
+            logger.api('RAW REQUEST BODY:', requestBodyJSON);
+            const url = `${this.baseUrl}/chat/completions`;
+            logger.api('Sending POST to:', url);
+            const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.apiKey}` }, body: requestBodyJSON });
+            logger.api('Response status:', { status: response.status, statusText: response.statusText, ok: response.ok });
+            const responseText = await response.text();
+            logger.api('RAW RESPONSE TEXT:', responseText);
+            if (!response.ok) { logger.error(`API error: ${response.status}`, { responseText }); throw new Error(`API error: ${response.status}`); }
+            const data = JSON.parse(responseText);
+            logger.api('Parsed response data:', data);
+            if (!data.choices || !data.choices[0] || !data.choices[0].message) { logger.error('Invalid response structure', { data }); throw new Error('Invalid response structure'); }
+            const content = data.choices[0].message.content;
+            logger.info('LLM response content:', { content });
+            const moveMatch = content.match(/<([^>]+)>/g);
+            if (!moveMatch || moveMatch.length !== 1) {
+              logger.warning('Invalid response format - no single move in angle brackets found', { moveMatch, content });
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              continue;
+            }
+            const move = moveMatch[0].slice(1, -1).trim();
+            logger.success(`Extracted move from LLM: ${move}`);
+            if (this.mode === 'history') {
+              this.conversationHistory.push({ role: 'user', content: prompt }, { role: 'assistant', content });
+              logger.info('Conversation history updated', { historyLength: this.conversationHistory.length });
+            }
+            this.resetRetryDelay();
+            return { move, analysis: content };
+          } catch (error) {
+            logger.error('Error in LLM request', { error: error.message, stack: error.stack, retryDelay: this.retryDelay });
+            await new Promise(resolve => setTimeout(resolve, this.retryDelay));
+            this.increaseRetryDelay();
+          }
+        }
+      }
+
+      resetHistory() { this.conversationHistory = []; this.resetRetryDelay(); logger.info('LLM conversation history reset'); }
+    }
+
+    // ==================== GAME CONTROLLER ====================
+    class GameController {
+      constructor() {
+        this.engine = new ChessEngine();
+        this.ui = new ChessUI(this.engine);
+        this.llm = new LLMPlayer();
+        this.isPlaying = false;
+        this.playerColor = 'white';
+        this.pendingIllegalForLLM = null; // ephemeral per re-try
+        this.gameEnded = false;
+
+        this.ui.onMove = (move) => this.onPlayerMove(move);
+        this.setupEventListeners();
+        this.loadSettings();
+        logger.info('Game controller initialized');
+      }
+
+      setupEventListeners() {
+        document.getElementById('start-game').addEventListener('click', () => this.startNewGame());
+        document.getElementById('new-game').addEventListener('click', () => this.resetToSetup());
+        document.getElementById('clear-log').addEventListener('click', () => logger.clear());
+        ['api-base', 'api-key', 'api-model'].forEach(id => { document.getElementById(id).addEventListener('change', () => this.saveSettings()); });
+        document.getElementById('vis-only-turn').addEventListener('change', (e) => {
+          const val = !!e.target.checked; localStorage.setItem('fog-vis-only-turn', val ? '1' : '0');
+          this.ui.showVisOnlyOnTurn = val; this.ui.refreshFog(); this.ui.renderPieces();
+        });
+      }
+
+      loadSettings() {
+        const baseUrl = localStorage.getItem('chess-api-base') || 'https://api.openai.com/v1';
+        const apiKey = localStorage.getItem('chess-api-key') || '';
+        const model = localStorage.getItem('chess-api-model') || 'gpt-4o-mini';
+        const visOnly = localStorage.getItem('fog-vis-only-turn') === '1';
+        document.getElementById('api-base').value = baseUrl;
+        document.getElementById('api-key').value = apiKey;
+        document.getElementById('api-model').value = model;
+        document.getElementById('vis-only-turn').checked = visOnly;
+        this.ui.showVisOnlyOnTurn = visOnly;
+        logger.info('Settings loaded from localStorage');
+      }
+
+      saveSettings() {
+        localStorage.setItem('chess-api-base', document.getElementById('api-base').value);
+        localStorage.setItem('chess-api-key', document.getElementById('api-key').value);
+        localStorage.setItem('chess-api-model', document.getElementById('api-model').value);
+        logger.info('Settings saved to localStorage');
+      }
+
+      async startNewGame() {
+        this.saveSettings();
+        const baseUrl = document.getElementById('api-base').value;
+        const apiKey = document.getElementById('api-key').value;
+        const model = document.getElementById('api-model').value;
+        if (!baseUrl || !apiKey || !model) { alert('Please fill in all API configuration fields'); logger.error('Cannot start game - missing API configuration'); return; }
+        this.playerColor = document.querySelector('input[name="color"]:checked').value;
+        const mode = document.querySelector('input[name="mode"]:checked').value;
+        logger.info('Starting new game', { playerColor: this.playerColor, llmMode: mode });
+        this.llm.configure(baseUrl, apiKey, model, mode);
+        this.engine.reset();
+        this.ui.setPlayerColor(this.playerColor);
+        this.ui.refreshFog();
+        this.ui.renderPieces();
+        this.ui.enable();
+        this.isPlaying = true;
+        this.pendingIllegalForLLM = null;
+        this.gameEnded = false;
+        document.getElementById('game-setup').style.display = 'none';
+        document.getElementById('game-controls').style.display = 'block';
+        document.getElementById('move-history').textContent = '';
+        this.updateStatus();
+        if (this.playerColor === 'black') { logger.info('Player is black, LLM will move first'); await this.makeLLMMove(); } else { logger.info('Player is white, waiting for player move'); }
+      }
+
+      resetToSetup() {
+        logger.info('Resetting to setup screen');
+        this.isPlaying = false;
+        this.engine.reset();
+        this.ui.renderPieces();
+        this.ui.clearHighlights();
+        this.ui.clearLastMoveHighlight();
+        this.ui.disable();
+        this.llm.resetHistory();
+        this.pendingIllegalForLLM = null;
+        this.gameEnded = false;
+        document.getElementById('game-setup').style.display = 'block';
+        document.getElementById('game-controls').style.display = 'none';
+        document.getElementById('llm-thinking').style.display = 'none';
+      }
+
+      async onPlayerMove(move) {
+        try {
+          if (!this.isPlaying || this.engine.turn !== this.playerColor) { logger.warning('Player move rejected - not player turn or game not active'); return; }
+          logger.info('Player move received', move);
+          this.ui.disable();
+          const oppColor = (this.playerColor === 'white') ? 'black' : 'white';
+          const oppVisBefore = this.engine.getVisibleSet(oppColor);
+          const san = this.engine.makeMove(move);
+          this.engine.addHistoryEntry({ san, color: this.playerColor, from: move.from, to: move.to, oppVisSet: oppVisBefore });
+          await this.ui.animateMove(move);
+          this.ui.refreshFog();
+          this.ui.renderPieces();
+          this.updateMoveHistory();
+          this.updateStatus();
+          const gameOver = this.engine.isGameOver();
+          if (gameOver.over) { this.endGame(gameOver); return; }
+          logger.info('Starting LLM move after player move');
+          await this.makeLLMMove();
+          this.ui.enable();
+        } catch (error) {
+          logger.error('Critical error in onPlayerMove', { error: error.message, stack: error.stack });
+          this.ui.enable();
+        }
+      }
+
+      async makeLLMMove(prevIllegalMove = null) {
+        try {
+          logger.info('LLM turn starting');
+          document.getElementById('llm-thinking').style.display = 'block';
+          this.updateStatus('LLM is thinking...');
+          const pgn = this.engine.getFogPGNForViewer((this.playerColor === 'white') ? 'black' : 'white', false);
+          logger.info('Current Fog-PGN', { pgn });
+          const llmColor = this.playerColor === 'white' ? 'black' : 'white';
+          const visibleAscii = this.engine.getFogAscii(llmColor);
+          logger.info('LLM visible ASCII board prepared');
+          const { move: moveStr, analysis } = await this.llm.getMove(pgn, llmColor, { visibleAscii, illegalPrevMove: prevIllegalMove });
+          logger.success(`LLM decided on move: ${moveStr}`);
+          let move;
+          try {
+            move = this.engine.parseSAN(moveStr, llmColor);
+          } catch (error) {
+            logger.error('Failed to parse LLM move, retrying with feedback...', { move: moveStr, error: error.message });
+            // Re-request with only the immediate illegal feedback (no accumulation)
+            await this.makeLLMMove(moveStr);
+            return;
+          }
+          const oppVisBefore2 = this.engine.getVisibleSet(this.playerColor);
+          const san = this.engine.makeMove(move);
+          this.engine.addHistoryEntry({ san, color: llmColor, from: move.from, to: move.to, oppVisSet: oppVisBefore2 });
+          await this.ui.animateMove(move);
+          this.ui.refreshFog();
+          this.ui.renderPieces();
+          this.updateMoveHistory();
+          document.getElementById('llm-thinking').style.display = 'none';
+          this.updateStatus();
+          const gameOver = this.engine.isGameOver();
+          if (gameOver.over) { this.endGame(gameOver); }
+        } catch (error) {
+          logger.error('Critical error in makeLLMMove', { error: error.message, stack: error.stack });
+          document.getElementById('llm-thinking').style.display = 'none';
+          this.updateStatus('Error communicating with LLM');
+        }
+      }
+
+      updateMoveHistory() {
+        const fog = this.engine.getFogPGNForViewer(this.playerColor, this.gameEnded);
+        document.getElementById('move-history').textContent = fog;
+      }
+
+      updateStatus(customMessage) {
+        const status = document.getElementById('status');
+        if (customMessage) { status.textContent = customMessage; return; }
+        const turn = this.engine.turn;
+        const turnText = turn === this.playerColor ? 'Your turn' : "LLM's turn";
+        // In Fog of War, avoid surfacing check notifications (we still enforce legal moves)
+        status.textContent = turnText;
+        status.style.color = '#fff';
+      }
+
+      endGame(gameOver) {
+        logger.warning('Game ended', gameOver);
+        this.isPlaying = false;
+        this.ui.disable();
+        this.gameEnded = true;
+        const status = document.getElementById('status');
+        if (gameOver.result === 'king capture') {
+          const winnerText = gameOver.winner === this.playerColor ? 'You win!' : 'LLM wins!';
+          status.textContent = `King captured! ${winnerText}`;
+          status.style.color = '#4caf50';
+        } else {
+          status.textContent = 'Game ended';
+          status.style.color = '#ffa726';
+        }
+        this.updateMoveHistory();
+      }
+    }
+
+    // Initialize logger & game
+    document.addEventListener('DOMContentLoaded', () => {
+      logger.setElement(document.getElementById('debug-log'));
+      logger.info('Application started (Fog of War mode)');
+      const game = new GameController();
+    });
+  </script>
+</body>
+</html>
