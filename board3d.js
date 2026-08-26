@@ -58,8 +58,10 @@ class Board3D {
   _initScene() {
     this.scene = new THREE.Scene();
     this.scene.fog = new THREE.FogExp2(0x11140f, 0.055);
-    this.camera = new THREE.PerspectiveCamera(44, 4 / 3, 0.1, 80);
-    this.camRig = { yaw: 0, dist: 10.6, height: 7.4, drift: 0 };
+    this.camera = new THREE.PerspectiveCamera(52, 4 / 3, 0.1, 80);
+    // 낮고 가까운 시점 — 판에 눈을 붙이고 안개 너머를 넘겨다보는 자세
+    this.camRig = { yaw: 0, pitch: 0, dist: 7.1, height: 3.05, drift: 0, look: 0.5 };
+    this.userYaw = 0; this.userPitch = 0;
 
     const key = new THREE.DirectionalLight(0xcfd6c2, 1.5);
     key.position.set(5, 11, 4);
@@ -105,6 +107,128 @@ class Board3D {
 
   sq2pos(row, col) { return { x: col - 3.5, z: row - 3.5 }; }
 
+  /* ------------------------------ FX 텍스처/입자 ---------------------------- */
+  _fxTex(kind) {
+    this._fxCache = this._fxCache || {};
+    if (this._fxCache[kind]) return this._fxCache[kind];
+    const cv = document.createElement('canvas'); cv.width = cv.height = 128;
+    const g = cv.getContext('2d');
+    if (kind === 'flash') {
+      const gr = g.createRadialGradient(64, 64, 2, 64, 64, 64);
+      gr.addColorStop(0, 'rgba(255,246,214,1)');
+      gr.addColorStop(0.3, 'rgba(255,196,110,0.8)');
+      gr.addColorStop(1, 'rgba(255,150,50,0)');
+      g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+    } else if (kind === 'smoke') {
+      const gr = g.createRadialGradient(64, 64, 4, 64, 64, 64);
+      gr.addColorStop(0, 'rgba(180,180,172,0.55)');
+      gr.addColorStop(0.6, 'rgba(150,150,144,0.22)');
+      gr.addColorStop(1, 'rgba(140,140,134,0)');
+      g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+    } else if (kind === 'dust') {
+      const gr = g.createRadialGradient(64, 64, 2, 64, 64, 64);
+      gr.addColorStop(0, 'rgba(200,196,180,0.42)');
+      gr.addColorStop(1, 'rgba(190,186,170,0)');
+      g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+    }
+    const t = new THREE.CanvasTexture(cv);
+    this._fxCache[kind] = t;
+    return t;
+  }
+
+  _spawnFx(obj, vel, life, opts = {}) {
+    this._fx = this._fx || [];
+    this.scene.add(obj);
+    this._fx.push(Object.assign({ o: obj, vel, life, age: 0, grow: 0, spin: null, gravity: -9 }, opts));
+  }
+
+  _updateFx(dt) {
+    if (!this._fx) return;
+    for (let i = this._fx.length - 1; i >= 0; i--) {
+      const p = this._fx[i];
+      p.age += dt;
+      if (p.age >= p.life) { this.scene.remove(p.o); this._fx.splice(i, 1); continue; }
+      p.o.position.addScaledVector(p.vel, dt);
+      p.vel.y += p.gravity * dt;
+      if (p.o.position.y < 0.16 && p.gravity < 0) { p.o.position.y = 0.16; p.vel.y *= -0.35; p.vel.x *= 0.6; p.vel.z *= 0.6; }
+      if (p.spin) { p.o.rotation.x += p.spin.x * dt; p.o.rotation.y += p.spin.y * dt; p.o.rotation.z += p.spin.z * dt; }
+      const k = p.age / p.life;
+      if (p.grow) p.o.scale.multiplyScalar(1 + p.grow * dt);
+      if (p.o.material) p.o.material.opacity = (p.op0 !== undefined ? p.op0 : 1) * (1 - k * k);
+      if (p.o.isSprite && p.rise) p.o.position.y += p.rise * dt;
+    }
+  }
+
+  /* --------------------------------- 폭발 ---------------------------------- */
+  explode(row, col, big = 1) {
+    const p = this.sq2pos(row, col);
+    const at = new THREE.Vector3(p.x, 0.34, p.z);
+    // 섬광
+    const flash = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: this._fxTex('flash'), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 1,
+    }));
+    flash.position.copy(at); flash.scale.setScalar(0.7 * big);
+    this._spawnFx(flash, new THREE.Vector3(0, 0.2, 0), 0.32, { grow: 7 * big, gravity: 0, op0: 1 });
+    // 파편
+    for (let i = 0; i < 14; i++) {
+      const s = 0.05 + Math.random() * 0.07;
+      const d = new THREE.Mesh(new THREE.BoxGeometry(s, s, s),
+        new THREE.MeshStandardMaterial({ color: i % 3 ? 0x2b2724 : 0x6b5f4d, roughness: 0.9 }));
+      d.position.copy(at);
+      d.castShadow = true;
+      const a = Math.random() * 6.28, sp = 1.4 + Math.random() * 2.6 * big;
+      this._spawnFx(d, new THREE.Vector3(Math.cos(a) * sp * 0.6, 2.2 + Math.random() * 2.4 * big, Math.sin(a) * sp * 0.6), 1.1 + Math.random() * 0.5, {
+        spin: new THREE.Vector3((Math.random() - .5) * 14, (Math.random() - .5) * 14, (Math.random() - .5) * 14),
+      });
+    }
+    // 불티
+    for (let i = 0; i < 10; i++) {
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: this._fxTex('flash'), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.9, color: 0xffb457,
+      }));
+      sp.position.copy(at); sp.scale.setScalar(0.1);
+      const a = Math.random() * 6.28;
+      this._spawnFx(sp, new THREE.Vector3(Math.cos(a) * 2.4, 1.6 + Math.random() * 2.6, Math.sin(a) * 2.4), 0.6 + Math.random() * 0.4, { gravity: -5, op0: 0.9 });
+    }
+    // 연기
+    for (let i = 0; i < 5; i++) {
+      const sm = new THREE.Sprite(new THREE.SpriteMaterial({ map: this._fxTex('smoke'), transparent: true, depthWrite: false, opacity: 0.5 }));
+      sm.position.copy(at).add(new THREE.Vector3((Math.random() - .5) * 0.4, i * 0.12, (Math.random() - .5) * 0.4));
+      sm.scale.setScalar(0.5 + i * 0.15);
+      this._spawnFx(sm, new THREE.Vector3((Math.random() - .5) * 0.5, 0.7 + Math.random() * 0.5, (Math.random() - .5) * 0.5), 1.6 + Math.random() * 0.6, { grow: 1.6, gravity: 0.3, op0: 0.5 });
+    }
+    // 섬광 라이트
+    if (!this._boomLight) {
+      this._boomLight = new THREE.PointLight(0xffb060, 0, 12, 2);
+      this.scene.add(this._boomLight);
+    }
+    this._boomLight.position.copy(at).add(new THREE.Vector3(0, 0.5, 0));
+    this._boomLight.intensity = 26 * big;
+    this._boomT = 1;
+    this.kick(0.75 * big);
+    this.trackBurst = Math.max(this.trackBurst, 0.9 * big);
+  }
+
+  /* ------------------------- 월드 공간 점수 팝업 --------------------------- */
+  worldPopup(row, col, text, color = '#ffd76a') {
+    const cv = document.createElement('canvas');
+    cv.width = 256; cv.height = 96;
+    const g = cv.getContext('2d');
+    g.font = "bold 54px 'Courier New', monospace";
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.lineWidth = 7; g.strokeStyle = 'rgba(8,10,6,0.85)';
+    g.strokeText(text, 128, 50);
+    g.fillStyle = color;
+    g.fillText(text, 128, 50);
+    const tex = new THREE.CanvasTexture(cv);
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: false, opacity: 1 }));
+    const p = this.sq2pos(row, col);
+    sp.position.set(p.x, 0.9, p.z);
+    sp.scale.set(1.5, 0.56, 1);
+    sp.renderOrder = 20;
+    this._spawnFx(sp, new THREE.Vector3(0, 0.9, 0), 1.25, { gravity: -0.5, op0: 1 });
+  }
+
   setupBoard() {
     // 타일
     this.tiles = [];
@@ -125,7 +249,7 @@ class Board3D {
     }
     // 안개 기둥 (칸마다 하나, 보이면 opacity→0)
     this.fogBlocks = [];
-    const fogGeo = new THREE.BoxGeometry(0.99, 1.35, 0.99);
+    const fogGeo = new THREE.BoxGeometry(0.99, 1.12, 0.99);
     for (let r = 0; r < 8; r++) {
       this.fogBlocks.push([]);
       for (let c = 0; c < 8; c++) {
@@ -134,7 +258,7 @@ class Board3D {
         });
         const f = new THREE.Mesh(fogGeo, fm);
         const p = this.sq2pos(r, c);
-        f.position.set(p.x, 0.82, p.z);
+        f.position.set(p.x, 0.7, p.z);
         f.userData = { phase: Math.random() * 6.28, target: 0.68 };
         f.renderOrder = 5;
         this.groups.fog.add(f);
@@ -285,24 +409,55 @@ class Board3D {
     setTimeout(() => { this.groups.marks.remove(m); }, 1200);
   }
 
-  async animateMove(move) {
+  // 스스륵 미끄러져 가서 쿵 내려앉는다 — 착지 순간 onImpact 호출
+  async animateMove(move, onImpact) {
     const { from, to } = move;
     this.highlightLastMove(from, to);
     const g = this.pieceAt[`${from.row},${from.col}`];
-    if (g) {
-      const a = this.sq2pos(from.row, from.col), b = this.sq2pos(to.row, to.col);
-      const t0 = performance.now();
-      await new Promise(res => {
-        const step = () => {
-          const k = Math.min(1, (performance.now() - t0) / 150);
-          g.position.x = a.x + (b.x - a.x) * k;
-          g.position.z = a.z + (b.z - a.z) * k;
-          g.position.y = 0.14 + Math.sin(k * Math.PI) * 0.3;
-          if (k < 1) requestAnimationFrame(step); else res();
-        };
-        step();
-      });
+    if (!g) { if (onImpact) onImpact(); return; }
+    const a = this.sq2pos(from.row, from.col), b = this.sq2pos(to.row, to.col);
+    const dist = Math.hypot(b.x - a.x, b.z - a.z);
+    const glideMs = 210 + dist * 34;      // 멀수록 조금 더 길게 미끄러진다
+    const dropMs = 130;
+    const t0 = performance.now();
+    // 1) 살짝 들려서 미끄러진다 (ease-in-out)
+    await new Promise(res => {
+      const step = () => {
+        const k = Math.min(1, (performance.now() - t0) / glideMs);
+        const e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+        g.position.x = a.x + (b.x - a.x) * e;
+        g.position.z = a.z + (b.z - a.z) * e;
+        g.position.y = 0.14 + Math.sin(k * Math.PI) * 0.16 + 0.06 * (1 - Math.abs(k * 2 - 1));
+        g.rotation.z = Math.sin(k * Math.PI) * 0.06 * (b.x > a.x ? -1 : 1);
+        if (k < 1) requestAnimationFrame(step); else res();
+      };
+      step();
+    });
+    // 2) 쿵 — 내려찍고 눌렸다 펴진다
+    const tD = performance.now();
+    if (onImpact) setTimeout(onImpact, dropMs * 0.55);
+    await new Promise(res => {
+      const step = () => {
+        const k = Math.min(1, (performance.now() - tD) / dropMs);
+        const drop = 1 - Math.pow(1 - k, 3);
+        g.position.y = 0.14 + 0.2 * (1 - drop);
+        const squash = k < 0.55 ? 1 : 1 - Math.sin((k - 0.55) / 0.45 * Math.PI) * 0.13;
+        g.scale.set(1 + (1 - squash) * 0.7, squash, 1 + (1 - squash) * 0.7);
+        g.rotation.z *= 0.82;
+        if (k < 1) requestAnimationFrame(step);
+        else { g.scale.set(1, 1, 1); g.rotation.z = 0; g.position.y = 0.14; res(); }
+      };
+      step();
+    });
+    // 착지 먼지
+    for (let i = 0; i < 5; i++) {
+      const d = new THREE.Sprite(new THREE.SpriteMaterial({ map: this._fxTex('dust'), transparent: true, depthWrite: false, opacity: 0.34 }));
+      d.position.set(b.x + (Math.random() - .5) * 0.3, 0.18, b.z + (Math.random() - .5) * 0.3);
+      d.scale.setScalar(0.22);
+      const ang = Math.random() * 6.28;
+      this._spawnFx(d, new THREE.Vector3(Math.cos(ang) * 0.5, 0.25, Math.sin(ang) * 0.5), 0.5, { grow: 2.2, gravity: 0.2, op0: 0.34 });
     }
+    this.kick(0.16);
   }
 
   kick(v = 0.4) { this.trackBurst = Math.max(this.trackBurst, v); this.camRig.drift = 0.12; }
@@ -318,6 +473,35 @@ class Board3D {
 
   /* --------------------------------- 입력 ---------------------------------- */
   _bindInput() {
+    // 가운데 버튼 드래그 = 시야 이동
+    this.canvas.addEventListener('contextmenu', e => e.preventDefault());
+    this.canvas.addEventListener('pointerdown', (e) => {
+      if (e.button !== 1 && e.button !== 2) return;
+      e.preventDefault();
+      this._drag = { x: e.clientX, y: e.clientY };
+      this.canvas.setPointerCapture(e.pointerId);
+      this.canvas.style.cursor = 'grabbing';
+    });
+    this.canvas.addEventListener('pointermove', (e) => {
+      if (!this._drag) return;
+      const dx = e.clientX - this._drag.x, dy = e.clientY - this._drag.y;
+      this._drag.x = e.clientX; this._drag.y = e.clientY;
+      this.userYaw = Math.max(-0.95, Math.min(0.95, this.userYaw - dx * 0.005));
+      this.userPitch = Math.max(-0.06, Math.min(0.85, this.userPitch + dy * 0.0035));
+    });
+    const endDrag = (e) => {
+      if (!this._drag) return;
+      this._drag = null;
+      this.canvas.style.cursor = '';
+      try { this.canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+    };
+    this.canvas.addEventListener('pointerup', endDrag);
+    this.canvas.addEventListener('pointercancel', endDrag);
+    this.canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      this.camRig.dist = Math.max(4.2, Math.min(11, this.camRig.dist + e.deltaY * 0.004));
+    }, { passive: false });
+
     this.canvas.addEventListener('click', (e) => {
       const hit = this._pick(e);
       if (!hit) return;
@@ -508,26 +692,87 @@ class Board3D {
     const g = this.osdCtx, KF = "'Malgun Gothic','Noto Sans CJK KR',sans-serif";
     g.clearRect(0, 0, IW, IH);
     const ivory = 'rgba(235,240,220,0.92)';
+    const dim = 'rgba(235,240,220,0.55)';
     g.shadowColor = 'rgba(10,14,8,0.9)'; g.shadowBlur = 2; g.shadowOffsetX = 1.5; g.shadowOffsetY = 1.5;
-    g.font = "bold 17px 'Courier New', monospace"; g.textAlign = 'left'; g.fillStyle = ivory;
-    if (t % 1.2 < 0.8) { g.fillStyle = 'rgba(235,80,60,0.95)'; g.fillText('●', 24, 36); g.fillStyle = ivory; }
-    g.fillText('REC', 44, 36);
-    g.font = "12px 'Courier New', monospace"; g.fillStyle = 'rgba(235,240,220,0.6)';
-    g.fillText('FOG CHESS · SURV CAM 02', 24, 54);
+
+    // 좌상단 — REC / 카메라 라벨
+    g.font = "bold 17px 'Courier New', monospace"; g.textAlign = 'left';
+    if (t % 1.2 < 0.8) { g.fillStyle = 'rgba(235,80,60,0.95)'; g.fillText('●', 24, 36); }
+    g.fillStyle = ivory; g.fillText('REC', 44, 36);
+    g.font = "12px 'Courier New', monospace"; g.fillStyle = dim;
+    g.fillText('SURV CAM 02 · 눈 감고 킹 따기', 24, 54);
+
+    // 우상단 — 상대 / 조명탄
+    g.textAlign = 'right';
+    g.font = "bold 13px 'Courier New', monospace"; g.fillStyle = dim;
+    g.fillText(`OPPONENT: ${this.hud.diff || 'OBSCURO'}`, IW - 24, 34);
+    if (this.hud.flares !== undefined) {
+      g.font = `bold 13px ${KF}`;
+      g.fillStyle = this.hud.flares > 0 ? 'rgba(240,214,120,0.9)' : 'rgba(235,240,220,0.35)';
+      g.fillText(`조명탄 ${'▮'.repeat(this.hud.flares)}${'▯'.repeat(Math.max(0, 3 - this.hud.flares))}  [F]`, IW - 24, 54);
+    }
+
+    // 우하단 — 날짜/시각
     const d = new Date();
-    g.textAlign = 'right'; g.font = "bold 15px 'Courier New', monospace"; g.fillStyle = ivory;
-    g.fillText(`${d.getFullYear()}. ${d.getMonth() + 1}. ${d.getDate()}`, IW - 24, IH - 44);
-    g.fillText(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`, IW - 24, IH - 24);
-    g.textAlign = 'left'; g.font = `bold 14px ${KF}`;
-    g.fillText(`점수 ${this.hud.score}${this.hud.combo >= 2 ? '  ×' + this.hud.combo : ''}`, 24, IH - 24);
-    if (this.bannerT > 0) {
-      g.textAlign = 'center'; g.font = `bold 26px ${KF}`;
-      g.fillStyle = 'rgba(235,240,220,0.95)';
-      g.fillText(this.bannerText, IW / 2, IH * 0.24);
+    g.font = "bold 15px 'Courier New', monospace"; g.fillStyle = ivory;
+    g.fillText(`${d.getFullYear()}. ${String(d.getMonth() + 1).padStart(2, '0')}. ${String(d.getDate()).padStart(2, '0')}`, IW - 24, IH - 44);
+    g.fillText(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`, IW - 24, IH - 22);
+
+    // 좌하단 — 점수 / 콤보
+    g.textAlign = 'left';
+    g.font = "bold 27px 'Courier New', monospace"; g.fillStyle = ivory;
+    g.fillText(String(this.hud.score || 0), 24, IH - 24);
+    g.font = `11px ${KF}`; g.fillStyle = dim;
+    g.fillText('SCORE', 24, IH - 48);
+    if (this.hud.combo >= 2) {
+      g.font = "bold 19px 'Courier New', monospace";
+      g.fillStyle = t % 0.5 < 0.32 ? 'rgba(255,150,80,0.95)' : 'rgba(255,150,80,0.6)';
+      g.fillText(`×${this.hud.combo}`, 24 + g.measureText(String(this.hud.score || 0)).width + 46, IH - 24);
+    }
+
+    // 제한시계 — 화면 하단 가장자리 띠
+    if (this.hud.clockK !== undefined && this.hud.clockK !== null) {
+      const k = Math.max(0, Math.min(1, this.hud.clockK));
+      g.shadowBlur = 0;
+      g.fillStyle = 'rgba(235,240,220,0.12)'; g.fillRect(0, IH - 5, IW, 4);
+      g.fillStyle = k < 0.25 ? 'rgba(230,70,50,0.9)' : (k < 0.5 ? 'rgba(235,170,60,0.85)' : 'rgba(150,190,120,0.75)');
+      g.fillRect(0, IH - 5, IW * k, 4);
+      g.shadowBlur = 2;
+    }
+
+    // 중앙 배너 (차례 알림 등)
+    if (this.bannerT > 0 && !this.endCard) {
+      const a = Math.min(1, this.bannerT / 0.4);
+      g.textAlign = 'center';
+      g.font = `bold 30px ${KF}`;
+      g.fillStyle = `rgba(235,240,220,${0.95 * a})`;
+      g.fillText(this.bannerText, IW / 2, IH * 0.2);
+    }
+
+    // 종료 카드 — 테이프 라벨 스타일, 결과만
+    if (this.endCard) {
+      const k = Math.min(1, (this.endCardT || 0) / 0.5);
+      g.shadowBlur = 0;
+      g.fillStyle = `rgba(8,9,7,${0.55 * k})`;
+      g.fillRect(0, 0, IW, IH);
+      const boxW = 300, boxH = 108, bx = (IW - boxW) / 2, by = IH * 0.36;
+      g.fillStyle = `rgba(214,210,186,${0.93 * k})`;
+      g.fillRect(bx, by, boxW, boxH);
+      g.fillStyle = `rgba(30,30,24,${0.9 * k})`;
+      g.font = "11px 'Courier New', monospace"; g.textAlign = 'left';
+      g.fillText('TAPE END', bx + 16, by + 24);
+      g.font = `bold 46px ${KF}`; g.textAlign = 'center';
+      g.fillStyle = this.endCard === 'win' ? `rgba(28,30,22,${k})` : `rgba(120,28,22,${k})`;
+      g.fillText(this.endCard === 'win' ? '승 리' : '패 배', IW / 2, by + 74);
+      g.font = `12px ${KF}`; g.fillStyle = `rgba(235,240,220,${0.6 * k})`;
+      if ((this.endCardT || 0) > 1.6) g.fillText('아무 키나 눌러 다시', IW / 2, by + boxH + 34);
     }
     g.shadowBlur = 0; g.shadowOffsetX = 0; g.shadowOffsetY = 0;
     this.osdTex.needsUpdate = true;
   }
+
+  showEnd(kind) { this.endCard = kind; this.endCardT = 0; }
+  clearEnd() { this.endCard = null; this.endCardT = 0; }
 
   _runPass(mat, target) {
     this.passMesh.material = mat;
@@ -541,16 +786,29 @@ class Board3D {
     this.simT += dt;
     const t = this.simT;
     if (this.bannerT > 0) this.bannerT -= dt;
+    if (this.endCard) this.endCardT = (this.endCardT || 0) + dt;
     // 카메라: 플레이어 진영 쪽 고정 감시 카메라 + 미세 드리프트
     const side = this.playerColor === 'white' ? 1 : -1;
     this.camRig.drift = Math.max(0, this.camRig.drift - dt * 0.4);
-    const yaw = n1(t * 0.11, 3) * 0.05 + this.camRig.drift * n1(t * 6, 9) * 0.4;
-    const dist = this.camRig.dist + n1(t * 0.07, 5) * 0.24;
-    this.camera.position.set(Math.sin(yaw) * dist * 0.4, this.camRig.height + n1(t * 0.09, 7) * 0.14, side * dist * 0.72);
-    this.camera.lookAt(n1(t * 0.13, 11) * 0.14, 0.1, 0);
-    this.camera.rotation.z += 0.004 + n1(t * 0.5, 13) * 0.006 + this.camRig.drift * n1(t * 7, 15) * 0.02;
+    // 손으로 잡은 카메라: 사용자 조작(중클릭 드래그) + 미세 흔들림
+    const yaw = this.userYaw + n1(t * 0.11, 3) * 0.03 + this.camRig.drift * n1(t * 6, 9) * 0.35;
+    const pitch = this.userPitch;
+    const dist = this.camRig.dist * (1 - pitch * 0.28) + n1(t * 0.07, 5) * 0.14;
+    const height = this.camRig.height + pitch * 6.2 + n1(t * 0.09, 7) * 0.09;
+    this.camera.position.set(
+      Math.sin(yaw) * dist * side,
+      height,
+      Math.cos(yaw) * dist * side);
+    this.camera.lookAt(n1(t * 0.13, 11) * 0.08, this.camRig.look - pitch * 0.5, 0);
+    this.camera.rotation.z += 0.003 + n1(t * 0.5, 13) * 0.005 + this.camRig.drift * n1(t * 7, 15) * 0.018;
     // 탐조등 순회
     this.sweepTgt.position.set(Math.cos(t * 0.13) * 3.4, 0, Math.sin(t * 0.17) * 3.4);
+    // 폭발 잔광 + 입자
+    if (this._boomLight) {
+      this._boomT = Math.max(0, (this._boomT || 0) - dt * 3.2);
+      this._boomLight.intensity *= Math.max(0, this._boomT);
+    }
+    this._updateFx(dt);
     // 안개 살아있기
     for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
       const f = this.fogBlocks[r][c];
@@ -560,7 +818,7 @@ class Board3D {
       if (f.material.opacity > 0.01) {
         f.visible = true;
         f.scale.y = 1 + Math.sin(t * 0.8 + u.phase) * 0.06;
-        f.position.y = 0.82 + Math.sin(t * 0.5 + u.phase * 1.7) * 0.03;
+        f.position.y = 0.7 + Math.sin(t * 0.5 + u.phase * 1.7) * 0.03;
         f.material.opacity *= (1 + Math.sin(t * 1.1 + u.phase) * 0.08);
       } else f.visible = false;
     }

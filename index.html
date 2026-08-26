@@ -12,11 +12,12 @@
     }
 
     body {
-      font-family: system-ui, -apple-system, sans-serif;
-      background: #2c2c2c;
+      font-family: 'Malgun Gothic','Noto Sans CJK KR',system-ui,sans-serif;
+      background: #060706;
       color: #fff;
       display: flex;
       min-height: 100vh;
+      overflow: hidden;
     }
 
     #chess-container {
@@ -24,16 +25,34 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 20px;
+      padding: 0;
     }
+    #c3d { cursor: crosshair; }
 
-    #sidebar {
-      width: 420px;
-      background: #1a1a1a;
-      padding: 20px;
-      overflow-y: auto;
-      border-left: 1px solid #444;
+    /* 사이드바는 화면에서 뺀다 — 정보는 전부 카메라 화면 안 OSD로 */
+    #sidebar { display: none !important; }
+
+    /* 시작 화면 — 테이프 라벨 */
+    #boot {
+      position: fixed; inset: 0; z-index: 40; background: #070806;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; transition: opacity .55s;
     }
+    #boot.gone { opacity: 0; pointer-events: none; }
+    #boot .lbl {
+      background: #d6d2ba; color: #23231c; padding: 20px 26px 18px; width: 420px;
+      box-shadow: 0 0 0 7px #0d0e0b, 0 20px 70px rgba(0,0,0,.75);
+    }
+    #boot .no { font-family: 'Courier New', monospace; font-size: 11px; letter-spacing: 2.5px; color: #7c7659; }
+    #boot h1 { font-size: 33px; margin: 6px 0 4px; letter-spacing: -1px; }
+    #boot .sub { font-size: 12.5px; color: #4d4a3a; line-height: 1.75; }
+    #boot .go {
+      margin-top: 16px; font-family: 'Courier New', monospace; font-size: 13px;
+      letter-spacing: 3px; color: #23231c; animation: bl 1.5s infinite;
+    }
+    @keyframes bl { 0%,58%{opacity:1} 59%,100%{opacity:.2} }
+    #boot .keys { margin-top: 340px; position: absolute; left: 0; right: 0; text-align: center;
+      font-size: 11px; color: #4a4a3e; font-family: 'Courier New', monospace; }
 
     h2 {
       margin-bottom: 15px;
@@ -413,14 +432,19 @@
     </details>
   </div>
 
-  <div id="overlay">
-    <div class="panel">
-      <h1 id="ov-title">승리</h1>
-      <div class="detail" id="ov-detail"></div>
-      <div class="final-score" id="ov-score">0</div>
-      <div class="best-line" id="ov-best"></div>
-      <button id="ov-retry">다시 출격</button>
+  <div id="overlay" style="display:none !important"></div>
+
+  <div id="boot">
+    <div class="lbl">
+      <div class="no">TAPE 07 · FOG CHESS · SURV CAM 02</div>
+      <h1>눈 감고 킹 따기</h1>
+      <div class="sub">
+        내 말이 갈 수 있는 칸만 보인다. 체크도 체크메이트도 없다.<br>
+        안개 속에서 상대 킹을 먼저 잡는 쪽이 이긴다.
+      </div>
+      <div class="go">▶ 화면을 눌러 재생</div>
     </div>
+    <div class="keys">클릭 = 착수 · 가운데버튼 드래그 = 시야 · 휠 = 거리 · F = 조명탄 · N = 새 게임</div>
   </div>
 
   <script src="./arcade-fx.js"></script>
@@ -476,6 +500,7 @@
       ];
     }
     // 순수 함수 무브젠 — 엔진(실제 보드)과 봇(가설 보드)이 공유
+    window.pseudoMovesFor = pseudoMovesFor;
     function pseudoMovesFor(board, r, c, enPassant, castling) {
       const piece = board[r][c]; if (!piece || piece === '.') return [];
       const color = (piece === piece.toUpperCase()) ? 'white' : 'black';
@@ -1240,10 +1265,8 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
         document.getElementById('start-game').addEventListener('click', () => this.startNewGame());
         document.getElementById('new-game').addEventListener('click', () => this.resetToSetup());
         document.getElementById('clear-log').addEventListener('click', () => logger.clear());
-        document.getElementById('ov-retry').addEventListener('click', () => {
-          document.getElementById('overlay').style.display = 'none';
-          this.resetToSetup();
-        });
+        const ovRetry = document.getElementById('ov-retry');
+        if (ovRetry) ovRetry.addEventListener('click', () => this.resetToSetup());
         document.querySelectorAll('.diff-btn').forEach(btn => {
           btn.addEventListener('click', () => {
             document.querySelectorAll('.diff-btn').forEach(b => b.classList.remove('active'));
@@ -1251,6 +1274,12 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
             this.diff = btn.dataset.diff;
             if (DIFFS[this.diff].obscuro && this.obscuro) this.obscuro.boot();   // 엔진 프리로드
           });
+        });
+        // 키보드: F 조명탄, N 새 게임, 종료 후 아무 키나 = 재시작
+        window.addEventListener('keydown', (e) => {
+          if (this.awaitRestart) { this.awaitRestart = false; if (this.ui.clearEnd) this.ui.clearEnd(); this.startNewGame(); return; }
+          if (e.code === 'KeyF') document.getElementById('flare-btn').click();
+          if (e.code === 'KeyN') { if (this.ui.clearEnd) this.ui.clearEnd(); this.startNewGame(); }
         });
         document.getElementById('flare-btn').addEventListener('click', () => {
           if (!this.isPlaying || this.flares <= 0 || this.engine.turn !== this.playerColor) return;
@@ -1283,30 +1312,11 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
         document.getElementById('best-line').textContent = b ? `최고 기록 — ${b.score}점 (${b.diff})` : '';
       }
       updateHUD() {
-        document.getElementById('hud-score').textContent = this.score;
-        const comboEl = document.getElementById('hud-combo');
-        comboEl.textContent = this.combo >= 2 ? `×${this.combo}` : '—';
-        comboEl.classList.toggle('combo-hot', this.combo >= 2);
-        document.getElementById('hud-diff').textContent = this.diff;
-        if (this.ui.setHUD) this.ui.setHUD({ score: this.score, combo: this.combo, diff: this.diff });
+        if (this.ui.setHUD) this.ui.setHUD({ score: this.score, combo: this.combo, diff: this.diff, flares: this.flares });
       }
       popupAt(row, col, text, color) {
         try {
-          let x, y;
-          if (this.ui.squareToScreen) {
-            const p = this.ui.squareToScreen(row, col);
-            x = p.x; y = p.y;
-          } else {
-            const rect = document.getElementById('chess-svg').getBoundingClientRect();
-            x = rect.left + rect.width * (40 + col * 80 + 40) / 720;
-            y = rect.top + rect.height * (40 + row * 80 + 30) / 720;
-          }
-          const el = document.createElement('div');
-          el.className = 'score-pop';
-          el.textContent = text;
-          el.style.left = x + 'px'; el.style.top = y + 'px'; el.style.color = color || '#ffd700';
-          document.body.appendChild(el);
-          setTimeout(() => el.remove(), 1150);
+          if (this.ui.worldPopup) { this.ui.worldPopup(row, col, text, color || '#ffd76a'); return; }
         } catch (e) {}
       }
       shakeBoard() {
@@ -1512,7 +1522,8 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
             const mult = Math.min(this.combo, 5);
             const pts = (PIECE_VAL[cap.toLowerCase()] === 20000 ? 2000 : (PIECE_VAL[cap.toLowerCase()] || 100)) * mult / 10;
             this.score += Math.round(pts);
-            this.popupAt(move.to.row, move.to.col, `+${Math.round(pts)}${mult > 1 ? '  ×' + mult : ''}`, mult > 1 ? '#ff7043' : '#ffd700');
+            if (this.ui.explode) this.ui.explode(move.to.row, move.to.col, cap.toLowerCase() === 'k' ? 1.8 : 1);
+            this.popupAt(move.to.row, move.to.col, `+${Math.round(pts)}${mult > 1 ? ' ×' + mult : ''}`, mult > 1 ? '#ff9d5c' : '#ffd76a');
             this.fx('capture');
             if (this.combo >= 2) this.fx('combo', this.combo);
             this.shakeBoard();
@@ -1544,13 +1555,14 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
         const san = this.engine.makeMove(move);
         this.engine.addHistoryEntry({ san, color: llmColor, from: move.from, to: move.to, oppVisSet: oppVisBefore2 });
         const cap = this.engine.lastMove && this.engine.lastMove.captured;
-        if (cap) {
-          this.combo = 0; this.updateHUD();
-          this.popupAt(move.to.row, move.to.col, '피격!', '#f44336');
-          this.fx('capture');
-          this.shakeBoard();
-        }
-        await this.ui.animateMove(move);
+        await this.ui.animateMove(move, () => {
+          if (cap) {
+            this.combo = 0; this.updateHUD();
+            if (this.ui.explode) this.ui.explode(move.to.row, move.to.col, cap.toLowerCase() === 'k' ? 1.8 : 1.15);
+            this.fx('capture');
+            this.shakeBoard();
+          } else this.fx('move');
+        });
         this.ui.refreshFog();
         this.ui.renderPieces();
         this.updateMoveHistory();
@@ -1559,6 +1571,8 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
         const gameOver = this.engine.isGameOver();
         if (gameOver.over) { this.endGame(gameOver); return; }
         this.kingIntuition();
+        if (this.ui.banner) this.ui.banner('당신의 차례입니다', 1.6);
+        this.fx('tick');
       }
 
       async makeAIMove() {
@@ -1650,39 +1664,38 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
           this.fx('lose');
         }
         this.updateHUD();
-        const status = document.getElementById('status');
-        status.textContent = win ? '적 킹을 잡았다 — 승리!' : '내 킹이 잡혔다 — 패배';
-        status.style.color = win ? '#4caf50' : '#f44336';
-        if (this.ui.banner) this.ui.banner(win ? '적 킹 포획 — 승리' : '킹 피탈 — 패배', 5);
         this.updateMoveHistory();
         this.ui.revealAll();
         this.fx('reveal');
-        // 최고 기록
         const prev = this.loadBest();
-        const rec = { score: this.score, diff: this.diff };
-        const isBest = win && (!prev || this.score > prev.score);
-        if (isBest && this.opponent === 'bot') this.saveBest(rec);
-        // 오버레이
+        if (win && (!prev || this.score > prev.score)) this.saveBest({ score: this.score, diff: this.diff });
+        // 결과는 화면 안 테이프 라벨로만
         setTimeout(() => {
-          document.getElementById('ov-title').textContent = win ? '🏆 승리' : '패배';
-          document.getElementById('ov-title').style.color = win ? '#ffd700' : '#f44336';
-          document.getElementById('ov-detail').textContent =
-            `${this.engine.moveHistory.length}수 · 난이도 ${this.opponent === 'bot' ? this.diff : 'LLM'} · 안개가 걷혔다 — 기보에서 전장을 복기하라`;
-          document.getElementById('ov-score').textContent = this.score + '점';
-          const nb = this.loadBest();
-          document.getElementById('ov-best').textContent =
-            (isBest && this.opponent === 'bot') ? '★ 신기록!' : (nb ? `최고 기록 ${nb.score}점 (${nb.diff})` : '');
-          document.getElementById('overlay').style.display = 'flex';
-        }, 1200);
+          if (this.ui.showEnd) this.ui.showEnd(win ? 'win' : 'lose');
+          this.awaitRestart = true;
+        }, 900);
       }
     }
 
     // Initialize logger & game
     document.addEventListener('DOMContentLoaded', () => {
       logger.setElement(document.getElementById('debug-log'));
-      logger.info('Application started (Fog Chess ARCADE)');
+      logger.info('Application started (눈 감고 킹 따기)');
       const game = new GameController();
       window.__game = game;   // 자동 검증용 훅
+      // 시작 화면 → 클릭하면 OBSCURO로 바로 진입 (오디오는 이 제스처 안에서 켠다)
+      const boot = document.getElementById('boot');
+      const launch = () => {
+        if (boot.classList.contains('gone')) return;
+        boot.classList.add('gone');
+        setTimeout(() => { boot.style.display = 'none'; }, 600);
+        game.diff = 'OBSCURO';
+        document.querySelectorAll('.diff-btn').forEach(b => b.classList.toggle('active', b.dataset.diff === 'OBSCURO'));
+        game.startNewGame();
+      };
+      boot.addEventListener('click', launch);
+      window.addEventListener('keydown', function once(e) { window.removeEventListener('keydown', once); launch(); });
+      window.__launch = launch;
     });
   </script>
 </body>

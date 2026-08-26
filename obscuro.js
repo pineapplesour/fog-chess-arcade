@@ -16,6 +16,8 @@
 
   const VAL = { p: 100, n: 315, b: 330, r: 500, q: 900, k: 20000 };
   const FILES = 'abcdefgh';
+  // index.html의 순수 무브젠을 재사용 (가설 보드용)
+  const pseudoOn = (board, r, c) => (window.pseudoMovesFor ? window.pseudoMovesFor(board, r, c, null, null) : []);
 
   /* ---------------- Stockfish 워커 풀 (1개, 순차 사용) ---------------- */
   class SF {
@@ -72,7 +74,7 @@
       this.color = 'black';
       this.belief = null;        // 마지막 목격 기반 신념 (칸 → 적 기물 or null)
       this.inventory = null;     // 적 잔여 재고 {p,n,b,r,q,k}
-      this.cfg = { samples: 12, movetimeMs: 110, multipv: 10, lambda: 0.5, missPenalty: 140 };
+      this.cfg = { samples: 12, movetimeMs: 110, multipv: 10, lambda: 0.5, missPenalty: 140, scout: 6 };
     }
     boot() { return this.sf.boot(); }
     newGame(color, cfg) {
@@ -173,6 +175,38 @@
       return `${rows.join('/')} ${sideToMove === 'white' ? 'w' : 'b'} - - 0 1`;
     }
 
+    /* --- 안개 체스 고유 보정: Stockfish는 "킹이 잡힌다"를 모른다 --- */
+    applyOn(board, m) {
+      const b = board.map(r => r.slice());
+      let ch = b[m.from.row][m.from.col];
+      if (!ch || ch === '.') return b;
+      if (ch.toLowerCase() === 'p' && (m.to.row === 0 || m.to.row === 7)) ch = (ch === 'P') ? 'Q' : 'q';
+      b[m.to.row][m.to.col] = ch;
+      b[m.from.row][m.from.col] = '.';
+      return b;
+    }
+    // 이 보드에서 side가 상대 킹을 즉시 잡을 수 있는가
+    kingHangs(board, side) {
+      const victimK = (side === 'white') ? 'k' : 'K';
+      for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+        const ch = board[r][c];
+        if (ch === '.' || ((ch === ch.toUpperCase()) ? 'white' : 'black') !== side) continue;
+        for (const m of pseudoOn(board, r, c)) if (board[m.row][m.col] === victimK) return true;
+      }
+      return false;
+    }
+    // 이 수를 두면 내 시야가 몇 칸 늘어나는가 (정찰 가치)
+    scoutGain(engine, m) {
+      const before = engine.getVisibleSet(this.color).size;
+      const saved = engine.board.map(r => r.slice());
+      const ch = engine.board[m.from.row][m.from.col];
+      engine.board[m.to.row][m.to.col] = ch;
+      engine.board[m.from.row][m.from.col] = '.';
+      const after = engine.getVisibleSet(this.color).size;
+      engine.board = saved;
+      return after - before;
+    }
+
     // 표준 체스로 성립 안 하는 샘플(상대편 킹이 이미 잡히는 위치 등) 사전 처리
     myKingCaptureMove(engine, b) {
       // 샘플 b에서 즉시 킹을 먹는 내 합법수(실보드 기준 합법)가 있으면 반환
@@ -233,21 +267,35 @@
         }
         const fen = this.boardToFen(b, this.color);
         const scores = await this.sf.evalFen(fen, { movetimeMs: this.cfg.movetimeMs, multipv: this.cfg.multipv });
+        const opp = (this.color === 'white') ? 'black' : 'white';
         for (const [u, cp] of Object.entries(scores)) {
-          if (!legal.has(u.slice(0, 4))) continue;   // 실보드 합법수만
-          const key = u.length > 4 ? u.slice(0, 4) : u;
-          (agg[key] = agg[key] || []).push(cp);
+          const key = u.slice(0, 4);
+          if (!legal.has(key)) continue;   // 실보드 합법수만
+          const mv = this.uciToMove(u);
+          let v = cp;
+          // ① 이 수로 적 킹을 잡는가 (이 세계에서 즉시 승리)
+          if (b[mv.to.row][mv.to.col] && b[mv.to.row][mv.to.col].toLowerCase() === 'k') v = 9000;
+          else {
+            // ② 두고 나면 내 킹이 잡히는가 — Stockfish가 절대 못 보는 안개 체스 고유의 패배
+            const after = this.applyOn(b, mv);
+            if (this.kingHangs(after, opp)) v = -9000;
+          }
+          (agg[key] = agg[key] || []).push(v);
         }
         used++;
         if (onProgress) onProgress(used, K);
       }
-      // 2) 집계: 평균 − λ·표준편차 − 결측 페널티
+      // 2) 집계: 평균 − λ·표준편차 − 결측 페널티 + 정찰 가치
+      //    안개 체스에서 시야는 자원이다. 같은 값이면 더 많이 보는 수를 둔다.
       let bestU = null, bestScore = -Infinity;
       for (const [u, arr] of Object.entries(agg)) {
         const mean = arr.reduce((a, x) => a + x, 0) / arr.length;
         const sd = Math.sqrt(arr.reduce((a, x) => a + (x - mean) * (x - mean), 0) / arr.length);
         const miss = Math.max(0, used - arr.length);
-        const s = mean - this.cfg.lambda * sd - this.cfg.missPenalty * (miss / Math.max(used, 1));
+        const lossShare = arr.filter(x => x <= -8000).length / arr.length;   // 킹을 내주는 세계 비율
+        let s = mean - this.cfg.lambda * sd - this.cfg.missPenalty * (miss / Math.max(used, 1));
+        s -= lossShare * 2600;                                              // 한 세계에서라도 킹이 날아가면 크게 깎는다
+        s += this.scoutGain(engine, this.uciToMove(u)) * (this.cfg.scout || 6);
         if (s > bestScore) { bestScore = s; bestU = u; }
       }
       if (!bestU) {   // 엔진이 아무것도 못 준 극단 케이스 → 임의 합법수
