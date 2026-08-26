@@ -223,6 +223,7 @@
 </head>
 <body>
   <div id="chess-container">
+    <canvas id="c3d" style="display:none"></canvas>
     <svg id="chess-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 720" width="600" height="600" aria-label="Chessboard with pieces">
       <style>
         #chess-svg {
@@ -395,7 +396,7 @@
       <div class="section">
         <div id="status">Ready</div>
         <div id="llm-thinking">적이 수를 읽는 중…</div>
-        <button id="flare-btn" style="background:#7a5c1e">🔦 조명탄 ×0 — 원하는 칸 5×5를 한 턴 밝힌다</button>
+        <button id="flare-btn" style="background:#7a5c1e">조명탄 ×0 — 원하는 칸 5×5를 한 턴 밝힌다</button>
         <button id="new-game">새 게임</button>
       </div>
 
@@ -424,6 +425,7 @@
 
   <script src="./arcade-fx.js"></script>
   <script src="./obscuro.js"></script>
+  <script type="module" src="./board3d.js"></script>
   <script>
     // ==================== LOGGER ====================
     class Logger {
@@ -1198,7 +1200,17 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
     class GameController {
       constructor() {
         this.engine = new ChessEngine();
-        this.ui = new ChessUI(this.engine);
+        if (window.Board3D) {
+          document.getElementById('chess-svg').style.display = 'none';
+          document.getElementById('c3d').style.display = 'block';
+          this.ui = new window.Board3D(this.engine);
+          this.ui.setFlareHook((r, c) => {
+            if (this.flareMode) { this.dropFlare(r, c); return true; }
+            return false;
+          });
+        } else {
+          this.ui = new ChessUI(this.engine);
+        }
         this.llm = new LLMPlayer();
         this.bot = new BotPlayer();
         this.obscuro = (window.ObscuroBot) ? new window.ObscuroBot('./engine/stockfish-nnue-16-single.js') : null;
@@ -1244,7 +1256,7 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
           if (!this.isPlaying || this.flares <= 0 || this.engine.turn !== this.playerColor) return;
           this.flareMode = !this.flareMode;
           document.getElementById('flare-btn').classList.toggle('arming', this.flareMode);
-          this.updateStatus(this.flareMode ? '🔦 조명탄 낙하 지점을 클릭하라' : undefined);
+          this.updateStatus(this.flareMode ? '조명탄 낙하 지점을 클릭하라' : undefined);
         });
         // 조명탄 조준 모드: 보드 클릭을 가로채 낙하 지점으로 사용
         document.getElementById('chess-svg').addEventListener('click', (e) => {
@@ -1276,12 +1288,19 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
         comboEl.textContent = this.combo >= 2 ? `×${this.combo}` : '—';
         comboEl.classList.toggle('combo-hot', this.combo >= 2);
         document.getElementById('hud-diff').textContent = this.diff;
+        if (this.ui.setHUD) this.ui.setHUD({ score: this.score, combo: this.combo, diff: this.diff });
       }
       popupAt(row, col, text, color) {
         try {
-          const rect = document.getElementById('chess-svg').getBoundingClientRect();
-          const x = rect.left + rect.width * (40 + col * 80 + 40) / 720;
-          const y = rect.top + rect.height * (40 + row * 80 + 30) / 720;
+          let x, y;
+          if (this.ui.squareToScreen) {
+            const p = this.ui.squareToScreen(row, col);
+            x = p.x; y = p.y;
+          } else {
+            const rect = document.getElementById('chess-svg').getBoundingClientRect();
+            x = rect.left + rect.width * (40 + col * 80 + 40) / 720;
+            y = rect.top + rect.height * (40 + row * 80 + 30) / 720;
+          }
           const el = document.createElement('div');
           el.className = 'score-pop';
           el.textContent = text;
@@ -1291,6 +1310,7 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
         } catch (e) {}
       }
       shakeBoard() {
+        if (this.ui.kick) { this.ui.kick(0.45); return; }
         const svg = document.getElementById('chess-svg');
         svg.classList.remove('shake'); void svg.offsetWidth; svg.classList.add('shake');
       }
@@ -1317,7 +1337,7 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
       /* ===== 조명탄 & 킹의 직감 ===== */
       updateFlareBtn() {
         const btn = document.getElementById('flare-btn');
-        btn.textContent = `🔦 조명탄 ×${this.flares} — 원하는 칸 5×5를 한 턴 밝힌다`;
+        btn.textContent = `조명탄 ×${this.flares} — 원하는 칸 5×5를 한 턴 밝힌다`;
         btn.disabled = this.flares <= 0;
         btn.style.display = (this.opponent === 'bot' || this.opponent === 'obscuro') ? 'block' : 'none';
       }
@@ -1335,7 +1355,7 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
         this.ui.renderPieces();
         this.updateFlareBtn();
         this.updateStatus();
-        this.popupAt(row, col, '🔦 조명탄!', '#ffd700');
+        this.popupAt(row, col, '조명탄!', '#ffd700');
         this.fx('reveal');
         logger.info(`Flare dropped at ${this.engine.coordsToAlgebraic(row, col)}`);
       }
@@ -1358,8 +1378,11 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
             }
           }
           if (danger) {
-            const sq = this.ui.getSquareElement(kr, kc);
-            if (sq) { sq.classList.remove('king-pulse'); void sq.getBBox; sq.classList.add('king-pulse'); setTimeout(() => sq.classList.remove('king-pulse'), 1400); }
+            if (this.ui.pulseSquare) this.ui.pulseSquare(kr, kc);
+            else {
+              const sq = this.ui.getSquareElement(kr, kc);
+              if (sq) { sq.classList.remove('king-pulse'); void sq.getBBox; sq.classList.add('king-pulse'); setTimeout(() => sq.classList.remove('king-pulse'), 1400); }
+            }
             this.fx('tick'); setTimeout(() => this.fx('tick'), 220);
             this.updateStatus('…가까이에서 무언가 움직인다');
           }
@@ -1444,6 +1467,7 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
         document.getElementById('timer-wrap').style.display = this.opponent !== 'llm' ? 'block' : 'none';
         document.getElementById('move-history').textContent = '';
         this.updateStatus();
+        if (this.ui.banner) this.ui.banner(this.opponent === 'obscuro' ? 'OBSCURO 감시 개시' : '안개 속 킹을 잡아라', 3);
         if (this.playerColor === 'black') { await this.makeAIMove(); }
         this.startClock();
       }
@@ -1629,6 +1653,7 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
         const status = document.getElementById('status');
         status.textContent = win ? '적 킹을 잡았다 — 승리!' : '내 킹이 잡혔다 — 패배';
         status.style.color = win ? '#4caf50' : '#f44336';
+        if (this.ui.banner) this.ui.banner(win ? '적 킹 포획 — 승리' : '킹 피탈 — 패배', 5);
         this.updateMoveHistory();
         this.ui.revealAll();
         this.fx('reveal');

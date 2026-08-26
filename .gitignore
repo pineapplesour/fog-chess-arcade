@@ -1,1 +1,6 @@
+memory/
+tasks/
 submission/
+docs/plans/
+*.log
+.venv/
