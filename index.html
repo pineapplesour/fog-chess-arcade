@@ -1683,19 +1683,20 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
       logger.info('Application started (눈 감고 킹 따기)');
       const game = new GameController();
       window.__game = game;   // 자동 검증용 훅
-      // 시작 화면 → 클릭하면 OBSCURO로 바로 진입 (오디오는 이 제스처 안에서 켠다)
+      // 시작 화면 없이 바로 판을 깐다. 오디오만 브라우저 정책상 첫 조작 때 켠다.
       const boot = document.getElementById('boot');
-      const launch = () => {
-        if (boot.classList.contains('gone')) return;
-        boot.classList.add('gone');
-        setTimeout(() => { boot.style.display = 'none'; }, 600);
-        game.diff = 'OBSCURO';
-        document.querySelectorAll('.diff-btn').forEach(b => b.classList.toggle('active', b.dataset.diff === 'OBSCURO'));
-        game.startNewGame();
+      if (boot) boot.remove();
+      game.diff = 'OBSCURO';
+      document.querySelectorAll('.diff-btn').forEach(b => b.classList.toggle('active', b.dataset.diff === 'OBSCURO'));
+      game.startNewGame();
+      const wake = () => {
+        window.removeEventListener('pointerdown', wake);
+        window.removeEventListener('keydown', wake);
+        game.fx('init');
       };
-      boot.addEventListener('click', launch);
-      window.addEventListener('keydown', function once(e) { window.removeEventListener('keydown', once); launch(); });
-      window.__launch = launch;
+      window.addEventListener('pointerdown', wake);
+      window.addEventListener('keydown', wake);
+      window.__launch = () => game.startNewGame();
     });
   </script>
 </body>

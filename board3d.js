@@ -58,9 +58,9 @@ class Board3D {
   _initScene() {
     this.scene = new THREE.Scene();
     this.scene.fog = new THREE.FogExp2(0x11140f, 0.055);
-    this.camera = new THREE.PerspectiveCamera(52, 4 / 3, 0.1, 80);
-    // 낮고 가까운 시점 — 판에 눈을 붙이고 안개 너머를 넘겨다보는 자세
-    this.camRig = { yaw: 0, pitch: 0, dist: 7.1, height: 3.05, drift: 0, look: 0.5 };
+    this.camera = new THREE.PerspectiveCamera(46, 4 / 3, 0.1, 80);
+    // 판 전체가 들어오는 감시 카메라 각도. 중클릭 드래그로 더 낮추거나 돌릴 수 있다.
+    this.camRig = { yaw: 0, pitch: 0, dist: 9.0, height: 7.3, drift: 0, look: 0.15 };
     this.userYaw = 0; this.userPitch = 0;
 
     const key = new THREE.DirectionalLight(0xcfd6c2, 1.5);
@@ -499,7 +499,7 @@ class Board3D {
       const dx = e.clientX - this._drag.x, dy = e.clientY - this._drag.y;
       this._drag.x = e.clientX; this._drag.y = e.clientY;
       this.userYaw = Math.max(-0.95, Math.min(0.95, this.userYaw - dx * 0.005));
-      this.userPitch = Math.max(-0.06, Math.min(0.85, this.userPitch + dy * 0.0035));
+      this.userPitch = Math.max(-0.62, Math.min(0.45, this.userPitch + dy * 0.0035));
     });
     const endDrag = (e) => {
       if (!this._drag) return;
@@ -511,7 +511,7 @@ class Board3D {
     this.canvas.addEventListener('pointercancel', endDrag);
     this.canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
-      this.camRig.dist = Math.max(4.2, Math.min(11, this.camRig.dist + e.deltaY * 0.004));
+      this.camRig.dist = Math.max(4.6, Math.min(13, this.camRig.dist + e.deltaY * 0.005));
     }, { passive: false });
 
     this.canvas.addEventListener('click', (e) => {
