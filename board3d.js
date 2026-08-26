@@ -361,6 +361,7 @@ class Board3D {
       const seen = this.revealMode || vis.has(`${r},${c}`);
       f.userData.target = seen ? 0 : 0.68;
     }
+    this._rebuildLastMarks();   // 시야가 바뀌면 흔적도 다시 판정한다
   }
 
   revealAll() {
@@ -396,12 +397,23 @@ class Board3D {
     }
     if (this._lastMarks) this._lastMarks.forEach(m => this.groups.marks.add(m));
   }
-  clearLastMoveHighlight() { this._lastMarks = null; this.clearHighlights(); }
+  clearLastMoveHighlight() { this._lastMarks = null; this._lastMoveSq = null; this.clearHighlights(); }
+  // 안개 준수: 내가 볼 수 없는 칸에는 흔적을 남기지 않는다.
+  // (이걸 빼먹으면 상대가 둔 자리가 안개 속에서도 드러나 게임이 무너진다)
   highlightLastMove(from, to) {
-    this._lastMarks = [
-      this._mark(from.row, from.col, 0x86a34c, 0.155, 0.46),
-      this._mark(to.row, to.col, 0x86a34c, 0.155, 0.46),
-    ];
+    this._lastMoveSq = { from, to };
+    this._rebuildLastMarks();
+  }
+  _rebuildLastMarks() {
+    if (this._lastMarks) this._lastMarks.forEach(m => this.groups.marks.remove(m));
+    this._lastMarks = null;
+    const sq = this._lastMoveSq;
+    if (!sq) return;
+    const seen = (r, c) => this.revealMode || this.visibleSet.has(`${r},${c}`);
+    const marks = [];
+    if (seen(sq.from.row, sq.from.col)) marks.push(this._mark(sq.from.row, sq.from.col, 0x86a34c, 0.155, 0.46));
+    if (seen(sq.to.row, sq.to.col)) marks.push(this._mark(sq.to.row, sq.to.col, 0x86a34c, 0.155, 0.46));
+    this._lastMarks = marks.length ? marks : null;
   }
   pulseSquare(row, col, color = 0xff4433) {
     const m = this._mark(row, col, color, 0.17, 0.5);
