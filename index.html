@@ -1220,7 +1220,9 @@ It is your turn. Output exactly one legal move in SAN wrapped in angle brackets,
       '신병':   { depth: 1, noise: 90, delay: 500, clock: 25, flares: 3 },
       '고참':   { depth: 2, noise: 25, delay: 650, clock: 15, flares: 2 },
       '사령관': { depth: 3, noise: 6,  delay: 750, clock: 10, flares: 1 },
-      'OBSCURO': { obscuro: true, samples: 14, movetimeMs: 70, multipv: 12, lambda: 0.5, scout: 6, hunt: 14, delay: 0, clock: 20, flares: 3 },
+      // 실측: 14샘플×70ms → 6승3패 / 18×140 → 4승0패 / 24×200 → 6승0패 (상대: 신념탐색 3수 봇).
+      // 계산량을 올릴수록 강해진다. 한 수 6초 선에서 끊는다.
+      'OBSCURO': { obscuro: true, samples: 18, movetimeMs: 140, multipv: 12, lambda: 0.5, scout: 6, hunt: 14, delay: 0, clock: 20, flares: 3 },
     };
     class GameController {
       constructor() {
